@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use rira_editor::{Editor, HitTestConfig};
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -120,6 +120,15 @@ impl App {
         let has_selection = !self.editor.selection.is_empty();
         let (sel_start, sel_end) = self.editor.selection.ordered();
 
+        // Update visible_lines based on current terminal size.
+        // Content height = terminal height - 2 (borders) - 2 (status lines).
+        let term_height = terminal.size().unwrap_or_default().height;
+        let content_height = term_height.saturating_sub(4) as usize;
+        if content_height > 0 {
+            self.editor.viewport.visible_lines = content_height;
+        }
+        let scroll_offset = self.editor.viewport.scroll_offset;
+
         let result = terminal.draw(|frame| {
             let area = frame.area();
 
@@ -131,6 +140,9 @@ impl App {
             let inner = block.inner(area);
 
             frame.render_widget(block, area);
+
+            // Reserve 2 rows for the status line (blank + status text)
+            let content_height = inner.height.saturating_sub(2) as usize;
 
             let mut lines: Vec<Line<'_>> = Vec::new();
 
@@ -144,7 +156,14 @@ impl App {
 
             let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
 
-            for (line_idx, line_text) in text_lines.iter().enumerate() {
+            // Only render visible lines based on viewport
+            let visible_end = (scroll_offset + content_height).min(text_lines.len());
+            for (line_idx, line_text) in text_lines
+                .iter()
+                .enumerate()
+                .take(visible_end)
+                .skip(scroll_offset)
+            {
                 let chars: Vec<char> = line_text.chars().collect();
 
                 if line_idx == cursor_line && ime_composing && !ime_preedit.is_empty() {
@@ -286,11 +305,14 @@ impl App {
 
             // Status line at the bottom
             lines.push(Line::raw(""));
+            let total_lines = text_lines.len();
             lines.push(Line::styled(
                 format!(
-                    "{file_name}{modified_indicator} | Ln {}, Col {} | ESC to quit",
+                    "{file_name}{modified_indicator} | Ln {}, Col {} | Scroll {}/{} | ESC to quit",
                     cursor_line + 1,
-                    cursor_col + 1
+                    cursor_col + 1,
+                    scroll_offset + 1,
+                    total_lines,
                 ),
                 Style::default().fg(Color::DarkGray),
             ));
@@ -637,6 +659,33 @@ impl ApplicationHandler for App {
                         self.request_redraw();
                     }
                 }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let total_lines = self.editor.buffer.line_count();
+                match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        if y > 0.0 {
+                            self.editor.viewport.scroll_up(y.abs().round() as usize);
+                        } else if y < 0.0 {
+                            self.editor
+                                .viewport
+                                .scroll_down(y.abs().round() as usize, total_lines);
+                        }
+                    }
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        let line_height = 20.0_f64;
+                        let lines = (pos.y.abs() / line_height).round() as usize;
+                        if lines > 0 {
+                            if pos.y > 0.0 {
+                                self.editor.viewport.scroll_up(lines);
+                            } else {
+                                self.editor.viewport.scroll_down(lines, total_lines);
+                            }
+                        }
+                    }
+                }
+                self.render();
             }
 
             WindowEvent::CursorMoved { position, .. } => {
