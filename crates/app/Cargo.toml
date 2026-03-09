@@ -21,6 +21,10 @@ rira-ui = { path = "../ui" }
 rira-renderer = { path = "../renderer" }
 winit.workspace = true
 crossbeam-channel.workspace = true
+pollster.workspace = true
+log.workspace = true
+env_logger.workspace = true
+ratatui.workspace = true
 
 [lints]
 workspace = true
