@@ -124,8 +124,6 @@ pub struct WgpuBackend {
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
     title: String,
-    /// Scale factor for the window
-    scale_factor: f64,
 }
 
 impl WgpuBackend {
@@ -141,7 +139,6 @@ impl WgpuBackend {
         let scale_factor = window.scale_factor();
         let font = Self::init_font(scale_factor);
 
-        let scale_factor = window.scale_factor();
         let size = window.inner_size();
         let title_bar_height_px = (TITLE_BAR_HEIGHT * scale_factor as f32) as u32;
 
@@ -173,7 +170,6 @@ impl WgpuBackend {
             render_pipeline,
             title_bar_height_px,
             title: String::from("rira"),
-            scale_factor,
         })
     }
 
