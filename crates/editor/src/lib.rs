@@ -29,6 +29,7 @@ pub struct Editor {
     /// The file path this editor is associated with.
     file_path: Option<std::path::PathBuf>,
     /// Whether the buffer has been modified since last save.
+    // TODO: Track save-point to correctly reset modified state after undo to saved state
     modified: bool,
 }
 
