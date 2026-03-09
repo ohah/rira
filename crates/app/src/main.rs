@@ -151,7 +151,17 @@ impl ApplicationHandler for App {
                     terminal
                         .backend_mut()
                         .resize(new_size.width, new_size.height);
-                    // Force ratatui to redraw all cells since pixel buffer was recreated
+                    // INVARIANT: terminal.clear() MUST be called after backend resize.
+                    //
+                    // WgpuBackend::resize() recreates the pixel buffer as all zeros,
+                    // but ratatui's internal diff state still holds the previous frame.
+                    // Without clear(), the next draw() compares identical buffers,
+                    // produces 0 diff updates, and the pixel buffer stays blank.
+                    // clear() resets the "previous" buffer so the diff sees every
+                    // cell as changed, forcing a full redraw into the new pixel buffer.
+                    //
+                    // See: test_draw_without_clear_after_resize_loses_content in
+                    // crates/renderer/src/lib.rs for the regression test.
                     if let Err(e) = terminal.clear() {
                         log::error!("Failed to clear terminal after resize: {e}");
                     }
@@ -164,7 +174,10 @@ impl ApplicationHandler for App {
                 log::info!("Scale factor changed to {scale_factor}");
                 if let Some(terminal) = self.terminal.as_mut() {
                     terminal.backend_mut().update_scale_factor(scale_factor);
-                    // Force ratatui to redraw all cells since font metrics changed
+                    // INVARIANT: terminal.clear() MUST be called after scale factor
+                    // change for the same reason as Resized — see comment above.
+                    // update_scale_factor() calls resize() internally, which
+                    // recreates the pixel buffer as all zeros.
                     if let Err(e) = terminal.clear() {
                         log::error!("Failed to clear terminal after scale change: {e}");
                     }

@@ -1093,4 +1093,285 @@ mod tests {
         let result = blend(200, 100, 0.5, 0.5);
         assert!((result as i32 - 150).abs() <= 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Resize-redraw regression tests
+    //
+    // These tests reproduce the blank-screen-after-resize bug without a GPU.
+    // The bug: WgpuBackend::resize() recreates the pixel buffer (all zeros),
+    // but ratatui's internal diff state is NOT reset. On the next draw(),
+    // ratatui compares previous vs current buffer — if the content is
+    // identical (same render), the diff is empty, Backend::draw() receives
+    // 0 cells, and the pixel buffer stays all zeros → blank screen.
+    //
+    // Fix: call terminal.clear() after resize, which resets ratatui's
+    // "previous" buffer so the next diff sees all cells as changed.
+    // -----------------------------------------------------------------------
+
+    use ratatui::backend::{ClearType, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+    use ratatui::style::{Color, Style};
+    use ratatui::widgets::Paragraph;
+    use ratatui::Terminal;
+    use std::io;
+
+    /// A minimal test double for `WgpuBackend` that uses a `Vec<u8>` pixel
+    /// buffer instead of GPU resources. It implements the ratatui `Backend`
+    /// trait and mimics the resize-clears-pixel-buffer behavior that caused
+    /// the blank-screen bug.
+    struct PixelBufferBackend {
+        /// Grid size in columns
+        cols: u16,
+        /// Grid size in rows
+        rows: u16,
+        /// CPU pixel buffer (RGBA, row-major) — analogous to WgpuBackend::pixel_buffer
+        pixel_buffer: Vec<u8>,
+        /// Buffer width in pixels
+        buf_width: u32,
+        /// Buffer height in pixels
+        buf_height: u32,
+        /// Cursor position
+        cursor_pos: Position,
+        /// Whether the backend clear() was called (for assertions)
+        cleared: bool,
+        /// Count of cells written via draw() in the most recent call
+        cells_drawn: usize,
+    }
+
+    impl PixelBufferBackend {
+        /// Create a new test backend with the given grid dimensions.
+        /// Each cell is assumed to be 10x20 pixels for simplicity.
+        fn new(cols: u16, rows: u16) -> Self {
+            let buf_width = cols as u32 * 10;
+            let buf_height = rows as u32 * 20;
+            Self {
+                cols,
+                rows,
+                pixel_buffer: vec![0u8; (buf_width * buf_height * 4) as usize],
+                buf_width,
+                buf_height,
+                cursor_pos: Position { x: 0, y: 0 },
+                cleared: false,
+                cells_drawn: 0,
+            }
+        }
+
+        /// Mimic `WgpuBackend::resize()`: recreate the pixel buffer as all
+        /// zeros. This is the exact behavior that causes the bug — the pixel
+        /// data is gone but ratatui doesn't know about it.
+        fn resize(&mut self, cols: u16, rows: u16) {
+            self.cols = cols;
+            self.rows = rows;
+            self.buf_width = cols as u32 * 10;
+            self.buf_height = rows as u32 * 20;
+            // Recreate pixel buffer — all zeros, previous content is lost
+            self.pixel_buffer = vec![0u8; (self.buf_width * self.buf_height * 4) as usize];
+        }
+
+        /// Check if the pixel buffer is entirely zeroed (blank screen).
+        fn is_pixel_buffer_blank(&self) -> bool {
+            self.pixel_buffer.iter().all(|&b| b == 0)
+        }
+
+        /// Return the number of cells drawn in the last Backend::draw() call.
+        fn last_cells_drawn(&self) -> usize {
+            self.cells_drawn
+        }
+    }
+
+    impl ratatui::backend::Backend for PixelBufferBackend {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            self.cells_drawn = 0;
+            for (x, y, cell) in content {
+                self.cells_drawn += 1;
+                // Write non-zero pixel data for each cell to simulate rendering.
+                // We fill the cell's pixel region with the foreground color so we
+                // can later verify the pixel buffer is not blank.
+                let (r, g, b) = color_to_rgb(cell.fg, true);
+                let px_x = x as u32 * 10;
+                let px_y = y as u32 * 20;
+                for dy in 0..20u32 {
+                    for dx in 0..10u32 {
+                        let bx = px_x + dx;
+                        let by = px_y + dy;
+                        if bx < self.buf_width && by < self.buf_height {
+                            let idx = ((by * self.buf_width + bx) * 4) as usize;
+                            if idx + 3 < self.pixel_buffer.len() {
+                                self.pixel_buffer[idx] = r;
+                                self.pixel_buffer[idx + 1] = g;
+                                self.pixel_buffer[idx + 2] = b;
+                                self.pixel_buffer[idx + 3] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            Ok(self.cursor_pos)
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.cursor_pos = position.into();
+            Ok(())
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.pixel_buffer.fill(0);
+            self.cleared = true;
+            Ok(())
+        }
+
+        fn clear_region(&mut self, _clear_type: ClearType) -> Result<(), Self::Error> {
+            self.clear()
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            Ok(Size::new(self.cols, self.rows))
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            Ok(WindowSize {
+                columns_rows: Size::new(self.cols, self.rows),
+                pixels: Size::new(self.buf_width as u16, self.buf_height as u16),
+            })
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// Helper: render a simple paragraph that fills the entire frame area.
+    fn render_content(terminal: &mut Terminal<PixelBufferBackend>) {
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let paragraph =
+                    Paragraph::new("Hello rira!").style(Style::default().fg(Color::White));
+                frame.render_widget(paragraph, area);
+            })
+            .expect("draw should succeed");
+    }
+
+    /// Verify that resize() zeros the pixel buffer, mimicking WgpuBackend behavior.
+    #[test]
+    fn test_resize_clears_pixel_buffer() {
+        let mut backend = PixelBufferBackend::new(80, 24);
+
+        // Write some non-zero data into the pixel buffer
+        for byte in &mut backend.pixel_buffer {
+            *byte = 0xFF;
+        }
+        assert!(!backend.is_pixel_buffer_blank());
+
+        // After resize, pixel buffer should be all zeros
+        backend.resize(100, 30);
+        assert!(
+            backend.is_pixel_buffer_blank(),
+            "resize() must recreate the pixel buffer as all zeros"
+        );
+    }
+
+    /// Regression test: after resize + terminal.clear(), the next draw must
+    /// produce a full redraw (all cells sent to Backend::draw), so the pixel
+    /// buffer is populated and the screen is not blank.
+    #[test]
+    fn test_clear_after_resize_enables_full_redraw() {
+        let backend = PixelBufferBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal creation should succeed");
+
+        // Initial draw — populates both ratatui buffers and the pixel buffer
+        render_content(&mut terminal);
+        assert!(
+            !terminal.backend().is_pixel_buffer_blank(),
+            "pixel buffer should be non-blank after initial draw"
+        );
+
+        // Simulate resize: pixel buffer is recreated (all zeros)
+        terminal.backend_mut().resize(100, 30);
+        assert!(
+            terminal.backend().is_pixel_buffer_blank(),
+            "pixel buffer should be blank immediately after resize"
+        );
+
+        // The fix: call terminal.clear() to reset ratatui's diff state
+        terminal.clear().expect("clear should succeed");
+
+        // Now draw again — ratatui should send ALL cells because the
+        // "previous" buffer was reset by clear()
+        render_content(&mut terminal);
+
+        let cells_drawn = terminal.backend().last_cells_drawn();
+        assert!(
+            cells_drawn > 0,
+            "after resize + clear, draw must produce >0 cells, got {cells_drawn}"
+        );
+        assert!(
+            !terminal.backend().is_pixel_buffer_blank(),
+            "pixel buffer must not be blank after resize + clear + draw"
+        );
+    }
+
+    /// Document the bug behavior: WITHOUT terminal.clear() after resize,
+    /// ratatui's diff produces 0 changed cells because the previous and
+    /// current buffers contain the same content. The pixel buffer stays
+    /// blank → the user sees a blank screen.
+    ///
+    /// This test exists to document the failure mode. If ratatui ever
+    /// changes its diff behavior, this test should be updated accordingly.
+    #[test]
+    fn test_draw_without_clear_after_resize_loses_content() {
+        let backend = PixelBufferBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal creation should succeed");
+
+        // Initial draw — establishes ratatui's diff baseline
+        render_content(&mut terminal);
+        assert!(!terminal.backend().is_pixel_buffer_blank());
+
+        // Simulate resize to the SAME size (so ratatui's autoresize doesn't
+        // trigger its own internal resize, which calls clear). The pixel
+        // buffer is recreated as all zeros but ratatui doesn't know.
+        terminal.backend_mut().resize(80, 24);
+        assert!(
+            terminal.backend().is_pixel_buffer_blank(),
+            "pixel buffer should be blank after resize"
+        );
+
+        // Draw WITHOUT calling terminal.clear() first.
+        // Ratatui compares previous vs current — content is identical,
+        // so diff yields 0 updates → Backend::draw() receives 0 cells.
+        render_content(&mut terminal);
+
+        let cells_drawn = terminal.backend().last_cells_drawn();
+        assert_eq!(
+            cells_drawn, 0,
+            "BUG: without clear(), ratatui diff produces 0 cells \
+             because both buffers match — pixel buffer stays blank. \
+             Got {cells_drawn} cells instead of 0."
+        );
+        assert!(
+            terminal.backend().is_pixel_buffer_blank(),
+            "BUG: pixel buffer remains blank because no cells were drawn"
+        );
+    }
 }
