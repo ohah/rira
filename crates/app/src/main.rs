@@ -138,6 +138,15 @@ impl ApplicationHandler for App {
                 self.render();
             }
 
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                log::info!("Scale factor changed to {scale_factor}");
+                if let Some(terminal) = self.terminal.as_mut() {
+                    terminal.backend_mut().update_scale_factor(scale_factor);
+                }
+                // Re-render after DPI change
+                self.render();
+            }
+
             WindowEvent::RedrawRequested => {
                 self.render();
             }

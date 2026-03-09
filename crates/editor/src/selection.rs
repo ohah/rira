@@ -103,10 +103,7 @@ mod tests {
     fn test_selected_text() {
         let buf = Buffer::from_text("hello world");
         let sel = Selection::new(Cursor::new(0, 0), Cursor::new(0, 5));
-        assert_eq!(
-            sel.selected_text(&buf),
-            Some("hello".to_string())
-        );
+        assert_eq!(sel.selected_text(&buf), Some("hello".to_string()));
     }
 
     #[test]
@@ -121,10 +118,7 @@ mod tests {
         let buf = Buffer::from_text("hello\nworld");
         let sel = Selection::new(Cursor::new(0, 3), Cursor::new(1, 2));
         // offset 3 to offset 8 ("lo\nwo")
-        assert_eq!(
-            sel.selected_text(&buf),
-            Some("lo\nwo".to_string())
-        );
+        assert_eq!(sel.selected_text(&buf), Some("lo\nwo".to_string()));
     }
 
     #[test]
