@@ -167,6 +167,9 @@ impl App {
                         Span::styled(after, Style::default().fg(Color::White)),
                     ]));
                 } else if has_selection && line_idx >= sel_start.line && line_idx <= sel_end.line {
+                    // TODO: Extract selection rendering logic to crates/ui as a reusable widget
+                    // to eliminate duplication between main.rs and integration tests.
+
                     // This line overlaps the selection
                     let sel_start_col = if line_idx == sel_start.line {
                         sel_start.col
@@ -218,6 +221,9 @@ impl App {
                         let pre_sel = sel_start_col.min(chars.len());
                         let post_sel = sel_end_col.min(chars.len());
 
+                        // Note: char-by-char span generation for cursor line with selection.
+                        // This may have performance implications for very long lines.
+                        // Consider batch rendering optimization in the future.
                         for (i, &ch) in chars.iter().enumerate() {
                             let style = if i == cursor_c {
                                 Style::default()
