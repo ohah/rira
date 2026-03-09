@@ -24,13 +24,13 @@ impl Cursor {
             self.col -= 1;
         } else if self.line > 0 {
             self.line -= 1;
-            self.col = line_content_len(buffer, self.line);
+            self.col = buffer.line_content_len(self.line);
         }
     }
 
     /// Move cursor right by one character. Wraps to start of next line if at end.
     pub fn move_right(&mut self, buffer: &Buffer) {
-        let line_len = line_content_len(buffer, self.line);
+        let line_len = buffer.line_content_len(self.line);
         if self.col < line_len {
             self.col += 1;
         } else if self.line + 1 < buffer.line_count() {
@@ -43,7 +43,7 @@ impl Cursor {
     pub fn move_up(&mut self, buffer: &Buffer) {
         if self.line > 0 {
             self.line -= 1;
-            let line_len = line_content_len(buffer, self.line);
+            let line_len = buffer.line_content_len(self.line);
             if self.col > line_len {
                 self.col = line_len;
             }
@@ -54,7 +54,7 @@ impl Cursor {
     pub fn move_down(&mut self, buffer: &Buffer) {
         if self.line + 1 < buffer.line_count() {
             self.line += 1;
-            let line_len = line_content_len(buffer, self.line);
+            let line_len = buffer.line_content_len(self.line);
             if self.col > line_len {
                 self.col = line_len;
             }
@@ -68,7 +68,7 @@ impl Cursor {
 
     /// Move cursor to the end of the current line.
     pub fn move_to_line_end(&mut self, buffer: &Buffer) {
-        self.col = line_content_len(buffer, self.line);
+        self.col = buffer.line_content_len(self.line);
     }
 
     /// Clamp cursor to valid buffer bounds.
@@ -81,7 +81,7 @@ impl Cursor {
         if self.line > max_line {
             self.line = max_line;
         }
-        let line_len = line_content_len(buffer, self.line);
+        let line_len = buffer.line_content_len(self.line);
         if self.col > line_len {
             self.col = line_len;
         }
@@ -92,24 +92,6 @@ impl Cursor {
     pub fn to_char_offset(&self, buffer: &Buffer) -> usize {
         let line_start = buffer.line_to_char(self.line);
         line_start + self.col
-    }
-}
-
-/// Get the content length of a line (excluding trailing newline).
-fn line_content_len(buffer: &Buffer, line: usize) -> usize {
-    let total_chars = buffer.line_len_chars(line);
-    if total_chars == 0 {
-        return 0;
-    }
-    // If the line has a trailing newline, subtract 1
-    if let Some(text) = buffer.line(line) {
-        if text.ends_with('\n') {
-            total_chars.saturating_sub(1)
-        } else {
-            total_chars
-        }
-    } else {
-        0
     }
 }
 
