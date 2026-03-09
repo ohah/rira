@@ -265,4 +265,107 @@ mod tests {
         c.move_down(&buf);
         assert_eq!(c.line, 2);
     }
+
+    #[test]
+    fn test_cursor_move_left_stops_at_start() {
+        let buf = test_buffer();
+        let mut c = Cursor::new(0, 0);
+        c.move_left(&buf);
+        assert_eq!(c.line, 0);
+        assert_eq!(c.col, 0);
+    }
+
+    #[test]
+    fn test_cursor_move_right_stops_at_end() {
+        // "foo" is the last line (no trailing newline), length 3
+        let buf = test_buffer();
+        let mut c = Cursor::new(2, 3);
+        c.move_right(&buf);
+        assert_eq!(c.line, 2);
+        assert_eq!(c.col, 3);
+    }
+
+    #[test]
+    fn test_cursor_move_up_clamps_column() {
+        // "hi\nhello world" — moving up from col 10 in line 1 to line 0 ("hi", len 2)
+        let buf = Buffer::from_text("hi\nhello world");
+        let mut c = Cursor::new(1, 10);
+        c.move_up(&buf);
+        assert_eq!(c.line, 0);
+        assert_eq!(c.col, 2);
+    }
+
+    #[test]
+    fn test_cursor_move_down_clamps_column() {
+        let buf = Buffer::from_text("hello world\nhi");
+        let mut c = Cursor::new(0, 10);
+        c.move_down(&buf);
+        assert_eq!(c.line, 1);
+        assert_eq!(c.col, 2);
+    }
+
+    #[test]
+    fn test_cursor_home() {
+        let mut c = Cursor::new(1, 5);
+        c.move_to_line_start();
+        assert_eq!(c.col, 0);
+    }
+
+    #[test]
+    fn test_cursor_end() {
+        let buf = test_buffer();
+        let mut c = Cursor::new(1, 0);
+        c.move_to_line_end(&buf);
+        assert_eq!(c.col, 5); // "world" has 5 chars
+    }
+
+    #[test]
+    fn test_cursor_movement_clamps_to_buffer() {
+        let buf = Buffer::from_text("hi");
+        let mut c = Cursor::new(999, 999);
+        c.clamp_to_buffer(&buf);
+        assert_eq!(c.line, 0);
+        assert_eq!(c.col, 2);
+    }
+
+    #[test]
+    fn test_cursor_empty_buffer() {
+        let buf = Buffer::from_text("");
+        let mut c = Cursor::new(0, 0);
+        c.move_left(&buf);
+        assert_eq!(c, Cursor::new(0, 0));
+        c.move_right(&buf);
+        assert_eq!(c, Cursor::new(0, 0));
+        c.move_up(&buf);
+        assert_eq!(c, Cursor::new(0, 0));
+        c.move_down(&buf);
+        assert_eq!(c, Cursor::new(0, 0));
+        c.move_to_line_start();
+        assert_eq!(c.col, 0);
+        c.move_to_line_end(&buf);
+        assert_eq!(c.col, 0);
+    }
+
+    #[test]
+    fn test_cursor_single_line() {
+        let buf = Buffer::from_text("abc");
+        let mut c = Cursor::new(0, 1);
+        c.move_up(&buf);
+        assert_eq!(c, Cursor::new(0, 1)); // stays on line 0
+        c.move_down(&buf);
+        assert_eq!(c, Cursor::new(0, 1)); // stays on line 0
+    }
+
+    #[test]
+    fn test_cursor_at_beginning_and_end() {
+        let buf = Buffer::from_text("ab\ncd");
+        // At very beginning
+        let mut c = Cursor::new(0, 0);
+        c.move_left(&buf);
+        assert_eq!(c, Cursor::new(0, 0));
+        // At very end
+        let mut c = Cursor::new(1, 2);
+        c.move_right(&buf);
+        assert_eq!(c, Cursor::new(1, 2));
+    }
 }
