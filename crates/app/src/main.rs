@@ -117,6 +117,8 @@ impl App {
         let ime_composing = self.ime_composing;
         let file_name = self.editor.file_name().unwrap_or("untitled").to_string();
         let modified_indicator = if self.editor.is_modified() { " *" } else { "" };
+        let has_selection = !self.editor.selection.is_empty();
+        let (sel_start, sel_end) = self.editor.selection.ordered();
 
         let result = terminal.draw(|frame| {
             let area = frame.area();
@@ -140,54 +142,134 @@ impl App {
                 editor_content.split('\n').collect()
             };
 
+            let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+
             for (line_idx, line_text) in text_lines.iter().enumerate() {
-                if line_idx == cursor_line {
-                    // Build this line with a visible cursor + IME preedit
-                    let chars: Vec<char> = line_text.chars().collect();
+                let chars: Vec<char> = line_text.chars().collect();
+
+                if line_idx == cursor_line && ime_composing && !ime_preedit.is_empty() {
+                    // IME preedit rendering (no selection highlight during composition)
                     let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
-
-                    if ime_composing && !ime_preedit.is_empty() {
-                        // Show IME preedit text with underline at cursor position
-                        let after: String = if cursor_col < chars.len() {
-                            chars[cursor_col..].iter().collect()
-                        } else {
-                            String::new()
-                        };
-
-                        lines.push(Line::from(vec![
-                            Span::styled(before, Style::default().fg(Color::White)),
-                            Span::styled(
-                                ime_preedit.clone(),
-                                Style::default()
-                                    .fg(Color::Yellow)
-                                    .add_modifier(Modifier::UNDERLINED),
-                            ),
-                            Span::styled(after, Style::default().fg(Color::White)),
-                        ]));
+                    let after: String = if cursor_col < chars.len() {
+                        chars[cursor_col..].iter().collect()
                     } else {
-                        let cursor_char = if cursor_col < chars.len() {
-                            chars[cursor_col].to_string()
-                        } else {
-                            " ".to_string()
-                        };
-                        let after: String = if cursor_col + 1 < chars.len() {
-                            chars[cursor_col + 1..].iter().collect()
-                        } else {
-                            String::new()
-                        };
+                        String::new()
+                    };
 
-                        lines.push(Line::from(vec![
-                            Span::styled(before, Style::default().fg(Color::White)),
-                            Span::styled(
-                                cursor_char,
+                    lines.push(Line::from(vec![
+                        Span::styled(before, Style::default().fg(Color::White)),
+                        Span::styled(
+                            ime_preedit.clone(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::UNDERLINED),
+                        ),
+                        Span::styled(after, Style::default().fg(Color::White)),
+                    ]));
+                } else if has_selection && line_idx >= sel_start.line && line_idx <= sel_end.line {
+                    // This line overlaps the selection
+                    let sel_start_col = if line_idx == sel_start.line {
+                        sel_start.col
+                    } else {
+                        0
+                    };
+                    let sel_end_col = if line_idx == sel_end.line {
+                        sel_end.col
+                    } else {
+                        chars.len()
+                    };
+
+                    let sel_start_col = sel_start_col.min(chars.len());
+                    let sel_end_col = sel_end_col.min(chars.len());
+
+                    let mut spans = Vec::new();
+
+                    // Text before selection
+                    if sel_start_col > 0 {
+                        let before: String = chars[..sel_start_col].iter().collect();
+                        spans.push(Span::styled(before, Style::default().fg(Color::White)));
+                    }
+
+                    // Selected text
+                    if sel_start_col < sel_end_col {
+                        let selected: String = chars[sel_start_col..sel_end_col].iter().collect();
+                        spans.push(Span::styled(selected, selection_style));
+                    }
+
+                    // Text after selection
+                    if sel_end_col < chars.len() {
+                        let after: String = chars[sel_end_col..].iter().collect();
+                        spans.push(Span::styled(after, Style::default().fg(Color::White)));
+                    }
+
+                    // If the line is empty and within selection, show a selected space
+                    if chars.is_empty() && sel_start_col == 0 && line_idx < sel_end.line {
+                        spans.push(Span::styled(" ", selection_style));
+                    }
+
+                    // Render the cursor on this line if applicable
+                    if line_idx == cursor_line {
+                        // Cursor is shown within the selection line;
+                        // we rebuild spans to include cursor highlight
+                        spans.clear();
+                        let cursor_c = cursor_col.min(chars.len());
+
+                        // Before selection start
+                        let pre_sel = sel_start_col.min(chars.len());
+                        let post_sel = sel_end_col.min(chars.len());
+
+                        for (i, &ch) in chars.iter().enumerate() {
+                            let style = if i == cursor_c {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::White)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if i >= pre_sel && i < post_sel {
+                                selection_style
+                            } else {
+                                Style::default().fg(Color::White)
+                            };
+                            spans.push(Span::styled(ch.to_string(), style));
+                        }
+
+                        // Cursor past end of line
+                        if cursor_c >= chars.len() {
+                            spans.push(Span::styled(
+                                " ",
                                 Style::default()
                                     .fg(Color::Black)
                                     .bg(Color::White)
                                     .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(after, Style::default().fg(Color::White)),
-                        ]));
+                            ));
+                        }
                     }
+
+                    lines.push(Line::from(spans));
+                } else if line_idx == cursor_line {
+                    // Cursor line without selection
+                    let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
+                    let cursor_char = if cursor_col < chars.len() {
+                        chars[cursor_col].to_string()
+                    } else {
+                        " ".to_string()
+                    };
+                    let after: String = if cursor_col + 1 < chars.len() {
+                        chars[cursor_col + 1..].iter().collect()
+                    } else {
+                        String::new()
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(before, Style::default().fg(Color::White)),
+                        Span::styled(
+                            cursor_char,
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(after, Style::default().fg(Color::White)),
+                    ]));
                 } else {
                     lines.push(Line::styled(
                         line_text.to_string(),
@@ -498,27 +580,51 @@ impl ApplicationHandler for App {
                         self.render();
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        self.editor.cursor_left();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_left();
+                        } else {
+                            self.editor.cursor_left();
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        self.editor.cursor_right();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_right();
+                        } else {
+                            self.editor.cursor_right();
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        self.editor.cursor_up();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_up();
+                        } else {
+                            self.editor.cursor_up();
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.editor.cursor_down();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_down();
+                        } else {
+                            self.editor.cursor_down();
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::Home) => {
-                        self.editor.move_to_line_start();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_to_line_start();
+                        } else {
+                            self.editor.move_to_line_start();
+                        }
                         self.request_redraw();
                     }
                     Key::Named(NamedKey::End) => {
-                        self.editor.move_to_line_end();
+                        if self.modifiers.shift_key() {
+                            self.editor.select_to_line_end();
+                        } else {
+                            self.editor.move_to_line_end();
+                        }
                         self.request_redraw();
                     }
                     _ => {

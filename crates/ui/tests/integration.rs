@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
-use rira_editor::Editor;
+use rira_editor::{Cursor, Editor, Selection};
 use rira_ui::LineNumberGutter;
 
 /// Helper: render the editor state into a TestBackend terminal and return the buffer snapshot.
@@ -21,6 +21,10 @@ fn render_editor(editor: &Editor, width: u16, height: u16) -> ratatui::buffer::B
     let editor_content = editor.buffer.content();
     let cursor_line = editor.cursor.line;
     let cursor_col = editor.cursor.col;
+    let has_selection = !editor.selection.is_empty();
+    let (sel_start, sel_end) = editor.selection.ordered();
+
+    let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
 
     terminal
         .draw(|frame| {
@@ -44,8 +48,68 @@ fn render_editor(editor: &Editor, width: u16, height: u16) -> ratatui::buffer::B
             };
 
             for (line_idx, line_text) in text_lines.iter().enumerate() {
-                if line_idx == cursor_line {
-                    let chars: Vec<char> = line_text.chars().collect();
+                let chars: Vec<char> = line_text.chars().collect();
+
+                if has_selection && line_idx >= sel_start.line && line_idx <= sel_end.line {
+                    // Line overlaps the selection
+                    let start_col = if line_idx == sel_start.line {
+                        sel_start.col
+                    } else {
+                        0
+                    };
+                    let end_col = if line_idx == sel_end.line {
+                        sel_end.col
+                    } else {
+                        chars.len()
+                    };
+                    let start_col = start_col.min(chars.len());
+                    let end_col = end_col.min(chars.len());
+
+                    let mut spans = Vec::new();
+
+                    if line_idx == cursor_line {
+                        // Render char-by-char with cursor and selection
+                        let cursor_c = cursor_col.min(chars.len());
+                        for (i, &ch) in chars.iter().enumerate() {
+                            let style = if i == cursor_c {
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::White)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if i >= start_col && i < end_col {
+                                selection_style
+                            } else {
+                                Style::default().fg(Color::White)
+                            };
+                            spans.push(Span::styled(ch.to_string(), style));
+                        }
+                        if cursor_c >= chars.len() {
+                            spans.push(Span::styled(
+                                " ",
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::White)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                    } else {
+                        // No cursor on this line
+                        if start_col > 0 {
+                            let before: String = chars[..start_col].iter().collect();
+                            spans.push(Span::styled(before, Style::default().fg(Color::White)));
+                        }
+                        if start_col < end_col {
+                            let selected: String = chars[start_col..end_col].iter().collect();
+                            spans.push(Span::styled(selected, selection_style));
+                        }
+                        if end_col < chars.len() {
+                            let after: String = chars[end_col..].iter().collect();
+                            spans.push(Span::styled(after, Style::default().fg(Color::White)));
+                        }
+                    }
+
+                    lines.push(Line::from(spans));
+                } else if line_idx == cursor_line {
                     let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
                     let cursor_char = if cursor_col < chars.len() {
                         chars[cursor_col].to_string()
@@ -348,5 +412,108 @@ fn test_multiline_content_renders_correctly() {
     assert!(
         row3.contains('}'),
         "Row 3 should contain '}}', got: '{row3}'"
+    );
+}
+
+#[test]
+fn test_selection_renders_with_highlight_style() {
+    let mut editor = Editor::from_text("hello world");
+    editor.cursor = Cursor::new(0, 0);
+    editor.selection = Selection::collapsed(Cursor::new(0, 0));
+    // Select "hello" (5 chars to the right)
+    editor.select_right();
+    editor.select_right();
+    editor.select_right();
+    editor.select_right();
+    editor.select_right();
+
+    let buf = render_editor(&editor, 40, 10);
+
+    // The selected characters (h, e, l, l, o at cols 0-4) should have Blue bg
+    // The cursor is at col 5 (space after "hello")
+    // Cols 0-4 are selected, col 5 is cursor
+    // Border is col 0 in terminal, so text starts at col 1
+    for col in 0..5 {
+        let cell = buf.cell((col + 1, 1)).unwrap();
+        assert_eq!(
+            cell.bg,
+            Color::Blue,
+            "Selected char at col {col} should have Blue bg, got: {:?}",
+            cell.bg
+        );
+    }
+}
+
+#[test]
+fn test_shift_arrow_selection_accumulates() {
+    let mut editor = Editor::from_text("abcdef");
+    editor.cursor = Cursor::new(0, 1);
+    editor.selection = Selection::collapsed(Cursor::new(0, 1));
+
+    // Shift+Right three times
+    editor.select_right();
+    editor.select_right();
+    editor.select_right();
+
+    assert_eq!(editor.selection.anchor, Cursor::new(0, 1));
+    assert_eq!(editor.selection.cursor, Cursor::new(0, 4));
+    assert_eq!(
+        editor.selection.selected_text(&editor.buffer),
+        Some("bcd".to_string())
+    );
+
+    let buf = render_editor(&editor, 40, 10);
+
+    // Chars at cols 1, 2, 3 should be selected (Blue bg)
+    // Col 4 is the cursor (White bg)
+    for col in 1..4 {
+        let cell = buf.cell((col + 1, 1)).unwrap();
+        assert_eq!(
+            cell.bg,
+            Color::Blue,
+            "Selected char at col {col} should have Blue bg, got: {:?}",
+            cell.bg
+        );
+    }
+    // Cursor position
+    let cursor_cell = buf.cell((5, 1)).unwrap();
+    assert_eq!(cursor_cell.bg, Color::White, "Cursor should have White bg");
+}
+
+#[test]
+fn test_multiline_selection_renders() {
+    let mut editor = Editor::from_text("hello\nworld");
+    editor.cursor = Cursor::new(0, 3);
+    editor.selection = Selection::collapsed(Cursor::new(0, 3));
+    // Select to end of first line and into second line
+    // col 3 -> col 4 -> col 5 (end of "hello") -> line 1 col 0 -> line 1 col 1
+    editor.select_right(); // col 4
+    editor.select_right(); // col 5
+    editor.select_right(); // line 1, col 0
+    editor.select_right(); // line 1, col 1
+
+    assert_eq!(editor.selection.anchor, Cursor::new(0, 3));
+    assert_eq!(editor.cursor, Cursor::new(1, 1));
+
+    let buf = render_editor(&editor, 40, 10);
+
+    // First line: cols 3 and 4 should be selected (Blue bg)
+    for col in 3..5 {
+        let cell = buf.cell((col + 1, 1)).unwrap();
+        assert_eq!(
+            cell.bg,
+            Color::Blue,
+            "Line 0 col {col} should have Blue bg, got: {:?}",
+            cell.bg
+        );
+    }
+
+    // Second line: col 0 should be selected, col 1 is cursor
+    let cell = buf.cell((1, 2)).unwrap();
+    assert_eq!(
+        cell.bg,
+        Color::Blue,
+        "Line 1 col 0 should have Blue bg, got: {:?}",
+        cell.bg
     );
 }
