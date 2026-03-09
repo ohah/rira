@@ -1,0 +1,15 @@
+[package]
+name = "rira-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rira-theme = { path = "../theme" }
+wgpu.workspace = true
+cosmic-text.workspace = true
+ratatui.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "rira-terminal-pty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rira-terminal-core = { path = "../terminal-core" }
+portable-pty.workspace = true
+
+[lints]
+workspace = true

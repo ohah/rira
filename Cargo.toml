@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/editor",
+    "crates/keymap",
+    "crates/highlight",
+    "crates/git",
+    "crates/terminal-core",
+    "crates/terminal-pty",
+    "crates/theme",
+    "crates/ui",
+    "crates/renderer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75.0"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+needless_pass_by_value = "warn"
+cloned_instead_of_copied = "warn"
+redundant_closure_for_method_calls = "warn"
+enum_glob_use = "warn"
+unwrap_used = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.dependencies]
+# UI
+ratatui = "0.29"
+winit = "0.30"
+wgpu = "24"
+cosmic-text = "0.12"
+
+# Editor core
+ropey = "1.6"
+
+# Syntax highlighting
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+
+# Terminal
+portable-pty = "0.8"
+vte = "0.13"
+
+# Git
+git2 = "0.19"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Async / Threading
+crossbeam-channel = "0.5"
+
+# Testing
+proptest = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "rira-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rira-editor = { path = "../editor" }
+rira-highlight = { path = "../highlight" }
+rira-git = { path = "../git" }
+rira-terminal-core = { path = "../terminal-core" }
+rira-theme = { path = "../theme" }
+ratatui.workspace = true
+
+[lints]
+workspace = true

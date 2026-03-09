@@ -1,0 +1,26 @@
+[package]
+name = "rira"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rira"
+path = "src/main.rs"
+
+[dependencies]
+rira-editor = { path = "../editor" }
+rira-keymap = { path = "../keymap" }
+rira-highlight = { path = "../highlight" }
+rira-git = { path = "../git" }
+rira-terminal-core = { path = "../terminal-core" }
+rira-terminal-pty = { path = "../terminal-pty" }
+rira-theme = { path = "../theme" }
+rira-ui = { path = "../ui" }
+rira-renderer = { path = "../renderer" }
+winit.workspace = true
+crossbeam-channel.workspace = true
+
+[lints]
+workspace = true
