@@ -278,6 +278,18 @@ impl Editor {
         Ok(())
     }
 
+    /// Cut the selected text. Returns the cut text, or `None` if no selection.
+    ///
+    /// # Errors
+    /// Returns a `BufferError` if the delete operation fails.
+    pub fn cut(&mut self) -> Result<Option<String>, BufferError> {
+        let text = self.copy();
+        if text.is_some() {
+            self.delete_selection_if_any()?;
+        }
+        Ok(text)
+    }
+
     /// Move cursor left by one character.
     pub fn cursor_left(&mut self) {
         self.cursor.move_left(&self.buffer);
@@ -719,6 +731,45 @@ mod tests {
         ed.set_cursor_line(2);
         // Selection should be collapsed to the new cursor position
         assert_eq!(ed.selection, Selection::collapsed(Cursor::new(2, 0)));
+    }
+
+    #[test]
+    fn test_cut_with_selection() {
+        let mut ed = Editor::from_text("hello world");
+        ed.selection = Selection::new(Cursor::new(0, 0), Cursor::new(0, 5));
+        ed.cursor = Cursor::new(0, 5);
+        let result = ed.cut().expect("cut should succeed");
+        assert_eq!(result, Some("hello".to_string()));
+        assert_eq!(ed.buffer.to_string(), " world");
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_cut_no_selection() {
+        let mut ed = Editor::from_text("hello");
+        let result = ed.cut().expect("cut should succeed");
+        assert_eq!(result, None);
+        assert_eq!(ed.buffer.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_cut_multiline_selection() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.selection = Selection::new(Cursor::new(0, 3), Cursor::new(1, 2));
+        ed.cursor = Cursor::new(1, 2);
+        let result = ed.cut().expect("cut should succeed");
+        assert_eq!(result, Some("lo\nwo".to_string()));
+        assert_eq!(ed.buffer.to_string(), "helrld");
+    }
+
+    #[test]
+    fn test_cut_all_text() {
+        let mut ed = Editor::from_text("hello");
+        ed.select_all();
+        let result = ed.cut().expect("cut should succeed");
+        assert_eq!(result, Some("hello".to_string()));
+        assert_eq!(ed.buffer.to_string(), "");
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
     }
 
     #[test]
