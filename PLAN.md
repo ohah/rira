@@ -505,21 +505,21 @@ diff_removed = "#FF5555"
 
 목표: winit 윈도우에서 키 입력 → ratatui → wgpu 텍스트 렌더링 파이프라인 완성
 
-- [ ] 프로젝트 workspace 초기화 (Cargo.toml, 크레이트 구조, CI)
-- [ ] rustfmt, clippy, cargo-deny 설정
-- [ ] winit으로 macOS/Linux/Windows 네이티브 윈도우 생성
-- [ ] wgpu 초기화 및 렌더 파이프라인 구축
-- [ ] cosmic-text로 모노스페이스 폰트 로딩 및 글리프 렌더링
-- [ ] ratatui 백엔드 구현 (ratatui → wgpu 텍스트 그리드)
-- [ ] 키 입력 → 화면에 글자 출력
-- [ ] 커서 렌더링 및 깜빡임
-- [ ] 기본 색상/배경 처리
+- [x] 프로젝트 workspace 초기화 (Cargo.toml, 크레이트 구조, CI)
+- [x] rustfmt, clippy, cargo-deny 설정
+- [x] winit으로 macOS/Linux/Windows 네이티브 윈도우 생성
+- [x] wgpu 초기화 및 렌더 파이프라인 구축
+- [x] cosmic-text로 모노스페이스 폰트 로딩 및 글리프 렌더링
+- [x] ratatui 백엔드 구현 (ratatui → wgpu 텍스트 그리드)
+- [x] 키 입력 → 화면에 글자 출력
+- [x] 커서 렌더링 및 깜빡임
+- [x] 기본 색상/배경 처리
 
 ### Phase 2 — 에디터 코어
 
 목표: 실제로 파일을 열어서 편집하고 저장할 수 있는 상태
 
-- [ ] ropey 텍스트 버퍼 통합 + 유닛 테스트 + proptest
+- [x] ropey 텍스트 버퍼 통합 + 유닛 테스트 + proptest
 - [ ] 파일 열기 (Cmd+O) / 저장 (Cmd+S)
 - [ ] CLI: `rira .`, `rira file.rs`, `rira file.rs:42`
 - [ ] 기본 편집: 삽입, 삭제, 백스페이스, 줄바꿈
@@ -540,8 +540,8 @@ diff_removed = "#FF5555"
 - [ ] 파일 트리 사이드바 (Cmd+B) + UI 스냅샷 테스트
 - [ ] Command Palette (Cmd+Shift+P)
 - [ ] 탭 (다중 파일 열기)
-- [ ] 테마 시스템 (다크/라이트, 사용자 정의 테마, VSCode 임포트)
-- [ ] 커스텀 키맵 시스템 (keymap.toml 로딩)
+- [x] 테마 시스템 (다크/라이트, 사용자 정의 테마, VSCode 임포트) — crate 구현 완료, UI 연동 미완
+- [x] 커스텀 키맵 시스템 (keymap.toml 로딩) — crate 구현 완료, UI 연동 미완
 - [ ] 미니맵
 - [ ] 들여쓰기 가이드 라인
 - [ ] 괄호 매칭 하이라이트
