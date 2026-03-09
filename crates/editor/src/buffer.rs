@@ -288,9 +288,6 @@ mod tests {
     #[test]
     fn test_slice() {
         let buf = Buffer::from_text("hello world");
-        assert_eq!(
-            buf.slice(0..5).expect("slice should succeed"),
-            "hello"
-        );
+        assert_eq!(buf.slice(0..5).expect("slice should succeed"), "hello");
     }
 }
