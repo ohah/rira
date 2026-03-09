@@ -7,7 +7,7 @@ use ratatui::Terminal;
 use rira_editor::Editor;
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -20,6 +20,10 @@ struct App {
     cursor_position: (f64, f64),
     /// The text editor state.
     editor: Editor,
+    /// IME preedit text (composing state, e.g. Korean 자모 조합 중)
+    ime_preedit: String,
+    /// Whether IME is currently active (composing)
+    ime_composing: bool,
 }
 
 impl App {
@@ -29,6 +33,8 @@ impl App {
             terminal: None,
             cursor_position: (0.0, 0.0),
             editor: Editor::new(),
+            ime_preedit: String::new(),
+            ime_composing: false,
         }
     }
 
@@ -46,6 +52,8 @@ impl App {
         let editor_content = self.editor.buffer.content();
         let cursor_line = self.editor.cursor.line;
         let cursor_col = self.editor.cursor.col;
+        let ime_preedit = self.ime_preedit.clone();
+        let ime_composing = self.ime_composing;
 
         let result = terminal.draw(|frame| {
             let area = frame.area();
@@ -71,31 +79,52 @@ impl App {
 
             for (line_idx, line_text) in text_lines.iter().enumerate() {
                 if line_idx == cursor_line {
-                    // Build this line with a visible cursor
+                    // Build this line with a visible cursor + IME preedit
                     let chars: Vec<char> = line_text.chars().collect();
                     let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
-                    let cursor_char = if cursor_col < chars.len() {
-                        chars[cursor_col].to_string()
-                    } else {
-                        " ".to_string()
-                    };
-                    let after: String = if cursor_col + 1 < chars.len() {
-                        chars[cursor_col + 1..].iter().collect()
-                    } else {
-                        String::new()
-                    };
 
-                    lines.push(Line::from(vec![
-                        Span::styled(before, Style::default().fg(Color::White)),
-                        Span::styled(
-                            cursor_char,
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(Color::White)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(after, Style::default().fg(Color::White)),
-                    ]));
+                    if ime_composing && !ime_preedit.is_empty() {
+                        // Show IME preedit text with underline at cursor position
+                        let after: String = if cursor_col < chars.len() {
+                            chars[cursor_col..].iter().collect()
+                        } else {
+                            String::new()
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(before, Style::default().fg(Color::White)),
+                            Span::styled(
+                                ime_preedit.clone(),
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::UNDERLINED),
+                            ),
+                            Span::styled(after, Style::default().fg(Color::White)),
+                        ]));
+                    } else {
+                        let cursor_char = if cursor_col < chars.len() {
+                            chars[cursor_col].to_string()
+                        } else {
+                            " ".to_string()
+                        };
+                        let after: String = if cursor_col + 1 < chars.len() {
+                            chars[cursor_col + 1..].iter().collect()
+                        } else {
+                            String::new()
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(before, Style::default().fg(Color::White)),
+                            Span::styled(
+                                cursor_char,
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(Color::White)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(after, Style::default().fg(Color::White)),
+                        ]));
+                    }
                 } else {
                     lines.push(Line::styled(
                         line_text.to_string(),
@@ -177,6 +206,9 @@ impl ApplicationHandler for App {
             }
         };
 
+        // Enable IME for CJK input (Korean, Japanese, Chinese)
+        window.set_ime_allowed(true);
+
         self.window = Some(window);
         self.terminal = Some(terminal);
 
@@ -241,6 +273,35 @@ impl ApplicationHandler for App {
                 self.render();
             }
 
+            // IME events for CJK input (Korean, Japanese, Chinese)
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Enabled => {
+                    log::info!("IME enabled");
+                }
+                Ime::Preedit(text, cursor) => {
+                    log::info!("IME preedit: {:?}, cursor: {:?}", text, cursor);
+                    self.ime_preedit = text;
+                    self.ime_composing = !self.ime_preedit.is_empty();
+                    self.render();
+                }
+                Ime::Commit(text) => {
+                    log::info!("IME commit: {:?}", text);
+                    for c in text.chars() {
+                        if let Err(e) = self.editor.insert_char(c) {
+                            log::error!("IME commit insert failed: {e}");
+                        }
+                    }
+                    self.ime_preedit.clear();
+                    self.ime_composing = false;
+                    self.render();
+                }
+                Ime::Disabled => {
+                    log::info!("IME disabled");
+                    self.ime_preedit.clear();
+                    self.ime_composing = false;
+                }
+            },
+
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -250,6 +311,13 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
+                // Skip character input when IME is composing to avoid double input
+                if self.ime_composing {
+                    if let Key::Character(_) = &logical_key {
+                        return;
+                    }
+                }
+
                 log::info!("Key pressed: {:?}", logical_key);
 
                 match &logical_key {
