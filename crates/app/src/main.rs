@@ -17,6 +17,15 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::cli::{parse_file_arg, CliArgs};
 
+/// Returns true if the platform command key is pressed (Cmd on macOS, Ctrl elsewhere).
+fn is_cmd_pressed(modifiers: &ModifiersState) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.super_key()
+    } else {
+        modifiers.control_key()
+    }
+}
+
 /// Application state holding the renderer and terminal.
 struct App {
     window: Option<Arc<Window>>,
@@ -61,6 +70,8 @@ impl App {
     }
 
     fn handle_save(&mut self) {
+        // Note: rfd dialogs block the main thread. Consider async file dialogs for
+        // non-blocking UX in the future.
         if self.editor.file_path().is_some() {
             if let Err(e) = self.editor.save() {
                 log::error!("Failed to save file: {e}");
@@ -75,6 +86,8 @@ impl App {
     }
 
     fn handle_open(&mut self) {
+        // Note: rfd dialogs block the main thread. Consider async file dialogs for
+        // non-blocking UX in the future.
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             match Editor::from_file(&path) {
                 Ok(new_editor) => {
@@ -372,7 +385,7 @@ impl ApplicationHandler for App {
                 log::info!("Key pressed: {:?}", logical_key);
 
                 // Handle Cmd+key shortcuts before regular key handling
-                if self.modifiers.super_key() {
+                if is_cmd_pressed(&self.modifiers) {
                     match &logical_key {
                         Key::Character(ch) if ch.as_str() == "s" => {
                             self.handle_save();
