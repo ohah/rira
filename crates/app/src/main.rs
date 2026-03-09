@@ -141,9 +141,6 @@ impl App {
 
             frame.render_widget(block, area);
 
-            // Reserve 2 rows for the status line (blank + status text)
-            let content_height = inner.height.saturating_sub(2) as usize;
-
             let mut lines: Vec<Line<'_>> = Vec::new();
 
             // split('\n') matches the editor's line model:
@@ -661,6 +658,8 @@ impl ApplicationHandler for App {
                 }
             }
 
+            // Note: winit reports raw scroll deltas. macOS "natural scroll" is already
+            // accounted for by the OS, so positive y = scroll up, negative y = scroll down.
             WindowEvent::MouseWheel { delta, .. } => {
                 let total_lines = self.editor.buffer.line_count();
                 match delta {
@@ -674,7 +673,13 @@ impl ApplicationHandler for App {
                         }
                     }
                     MouseScrollDelta::PixelDelta(pos) => {
-                        let line_height = 20.0_f64;
+                        // Use backend cell height when available, fallback to default
+                        let line_height = if let Some(terminal) = self.terminal.as_ref() {
+                            let scale = terminal.backend().window().scale_factor();
+                            terminal.backend().cell_height() as f64 / scale
+                        } else {
+                            20.0
+                        };
                         let lines = (pos.y.abs() / line_height).round() as usize;
                         if lines > 0 {
                             if pos.y > 0.0 {
