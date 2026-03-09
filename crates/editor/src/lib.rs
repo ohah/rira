@@ -40,6 +40,20 @@ impl Editor {
         }
     }
 
+    /// Create an editor by loading a file.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if the file cannot be read.
+    pub fn from_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let buffer = Buffer::from_file(path)?;
+        Ok(Self {
+            buffer,
+            cursor: Cursor::default(),
+            selection: Selection::default(),
+            history: History::new(),
+        })
+    }
+
     /// Create an editor from a string.
     #[must_use]
     pub fn from_text(text: &str) -> Self {
@@ -49,6 +63,13 @@ impl Editor {
             selection: Selection::default(),
             history: History::new(),
         }
+    }
+
+    /// Set cursor to the beginning of a specific line (0-indexed), clamping to valid range.
+    pub fn set_cursor_line(&mut self, line: usize) {
+        let max_line = self.buffer.line_count().saturating_sub(1);
+        self.cursor = Cursor::new(line.min(max_line), 0);
+        self.selection = Selection::collapsed(self.cursor);
     }
 
     /// Insert a character at the cursor position.
@@ -578,6 +599,61 @@ mod tests {
         ed.collapse_selection();
         ed.move_to_line_end();
         assert_eq!(ed.cursor, Cursor::new(0, 5));
+    }
+
+    #[test]
+    fn test_from_file_nonexistent() {
+        let result = Editor::from_file(std::path::Path::new("/tmp/rira_nonexistent_test_file.rs"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_file_roundtrip() {
+        let dir = std::env::temp_dir().join("rira_test_from_file");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("test.txt");
+        std::fs::write(&path, "hello\nworld\n").expect("write test file");
+
+        let ed = Editor::from_file(&path).expect("should open file");
+        assert_eq!(ed.buffer.to_string(), "hello\nworld\n");
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
+        assert!(ed.selection.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_set_cursor_line() {
+        let mut ed = Editor::from_text("line0\nline1\nline2\nline3");
+        ed.set_cursor_line(2);
+        assert_eq!(ed.cursor, Cursor::new(2, 0));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_set_cursor_line_clamps() {
+        let mut ed = Editor::from_text("line0\nline1");
+        ed.set_cursor_line(100);
+        assert_eq!(ed.cursor, Cursor::new(1, 0));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_set_cursor_line_zero() {
+        let mut ed = Editor::from_text("line0\nline1");
+        ed.set_cursor_line(0);
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_set_cursor_line_initializes_selection() {
+        let mut ed = Editor::from_text("aaa\nbbb\nccc");
+        // Set a non-trivial selection first
+        ed.selection = Selection::new(Cursor::new(0, 0), Cursor::new(1, 3));
+        ed.set_cursor_line(2);
+        // Selection should be collapsed to the new cursor position
+        assert_eq!(ed.selection, Selection::collapsed(Cursor::new(2, 0)));
     }
 
     #[test]

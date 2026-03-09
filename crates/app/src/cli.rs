@@ -65,6 +65,8 @@ mod tests {
 
     #[test]
     fn parse_line_zero() {
+        // file.rs:0 is parsed as-is; the caller treats 0 the same as 1
+        // (first line) via saturating_sub(1).
         let (path, line) = parse_file_arg("file.rs:0");
         assert_eq!(path, PathBuf::from("file.rs"));
         assert_eq!(line, Some(0));
