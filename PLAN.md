@@ -522,14 +522,15 @@ diff_removed = "#FF5555"
 - [x] ropey 텍스트 버퍼 통합 + 유닛 테스트 + proptest
 - [ ] 파일 열기 (Cmd+O) / 저장 (Cmd+S)
 - [ ] CLI: `rira .`, `rira file.rs`, `rira file.rs:42`
-- [ ] 기본 편집: 삽입, 삭제, 백스페이스, 줄바꿈
-- [ ] 방향키 커서 이동
+- [x] 기본 편집: 삽입, 삭제, 백스페이스, 줄바꿈
+- [x] 방향키 커서 이동 (Arrow, Home, End)
 - [ ] 마우스 클릭으로 커서 위치 이동
 - [ ] 텍스트 선택 (Shift+방향키, 마우스 드래그, 더블/트리플 클릭)
 - [ ] 수직/수평 스크롤 (마우스 휠, 트랙패드)
-- [ ] undo/redo (Cmd+Z, Cmd+Shift+Z) + proptest 라운드트립 검증
+- [x] undo/redo (Cmd+Z, Cmd+Shift+Z) + proptest 라운드트립 검증
 - [ ] 클립보드 복사/붙여넣기 (Cmd+C, Cmd+V, Cmd+X)
-- [ ] 줄 번호 거터
+- [x] 줄 번호 거터 (LineNumberGutter 위젯)
+- [x] 통합 테스트 (TestBackend 기반 E2E, 12개 테스트)
 
 ### Phase 3 — VSCode 느낌 입히기
 
