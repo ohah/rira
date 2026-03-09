@@ -10,6 +10,9 @@ rira-theme = { path = "../theme" }
 wgpu.workspace = true
 cosmic-text.workspace = true
 ratatui.workspace = true
+winit.workspace = true
+pollster.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true
