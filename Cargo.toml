@@ -36,24 +36,23 @@ unsafe_code = "deny"
 
 [workspace.dependencies]
 # UI
-ratatui = "0.29"
+ratatui = "0.30"
 winit = "0.30"
-wgpu = "24"
-cosmic-text = "0.12"
+wgpu = "28"
+cosmic-text = "0.18"
 
 # Editor core
 ropey = "1.6"
 
 # Syntax highlighting
-tree-sitter = "0.24"
-tree-sitter-rust = "0.23"
+tree-sitter = "0.26"
 
 # Terminal
-portable-pty = "0.8"
-vte = "0.13"
+portable-pty = "0.9"
+vte = "0.15"
 
 # Git
-git2 = "0.19"
+git2 = "0.20"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
