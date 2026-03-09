@@ -12,7 +12,7 @@ use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::cli::{parse_file_arg, CliArgs};
@@ -29,6 +29,8 @@ struct App {
     ime_preedit: String,
     /// Whether IME is currently active (composing)
     ime_composing: bool,
+    /// Current modifier key state.
+    modifiers: ModifiersState,
 }
 
 impl App {
@@ -40,12 +42,50 @@ impl App {
             editor: Editor::new(),
             ime_preedit: String::new(),
             ime_composing: false,
+            modifiers: ModifiersState::empty(),
         }
     }
 
     fn request_redraw(&self) {
         if let Some(window) = &self.window {
             window.request_redraw();
+        }
+    }
+
+    fn update_window_title(&self) {
+        if let Some(window) = &self.window {
+            let name = self.editor.file_name().unwrap_or("untitled");
+            let modified = if self.editor.is_modified() { " *" } else { "" };
+            window.set_title(&format!("{name}{modified} — rira"));
+        }
+    }
+
+    fn handle_save(&mut self) {
+        if self.editor.file_path().is_some() {
+            if let Err(e) = self.editor.save() {
+                log::error!("Failed to save file: {e}");
+            }
+        } else if let Some(path) = rfd::FileDialog::new().save_file() {
+            if let Err(e) = self.editor.save_as(&path) {
+                log::error!("Failed to save file: {e}");
+            }
+        }
+        self.update_window_title();
+        self.render();
+    }
+
+    fn handle_open(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().pick_file() {
+            match Editor::from_file(&path) {
+                Ok(new_editor) => {
+                    self.editor = new_editor;
+                    self.update_window_title();
+                    self.render();
+                }
+                Err(e) => {
+                    log::error!("Failed to open file: {e}");
+                }
+            }
         }
     }
 
@@ -59,6 +99,8 @@ impl App {
         let cursor_col = self.editor.cursor.col;
         let ime_preedit = self.ime_preedit.clone();
         let ime_composing = self.ime_composing;
+        let file_name = self.editor.file_name().unwrap_or("untitled").to_string();
+        let modified_indicator = if self.editor.is_modified() { " *" } else { "" };
 
         let result = terminal.draw(|frame| {
             let area = frame.area();
@@ -142,7 +184,7 @@ impl App {
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 format!(
-                    "Ln {}, Col {} | ESC to quit",
+                    "{file_name}{modified_indicator} | Ln {}, Col {} | ESC to quit",
                     cursor_line + 1,
                     cursor_col + 1
                 ),
@@ -307,6 +349,10 @@ impl ApplicationHandler for App {
                 }
             },
 
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
+            }
+
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -324,6 +370,21 @@ impl ApplicationHandler for App {
                 }
 
                 log::info!("Key pressed: {:?}", logical_key);
+
+                // Handle Cmd+key shortcuts before regular key handling
+                if self.modifiers.super_key() {
+                    match &logical_key {
+                        Key::Character(ch) if ch.as_str() == "s" => {
+                            self.handle_save();
+                            return;
+                        }
+                        Key::Character(ch) if ch.as_str() == "o" => {
+                            self.handle_open();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
 
                 match &logical_key {
                     Key::Named(NamedKey::Escape) => {

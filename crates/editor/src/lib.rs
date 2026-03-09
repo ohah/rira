@@ -26,6 +26,10 @@ pub struct Editor {
     pub selection: Selection,
     /// The undo/redo history.
     pub history: History,
+    /// The file path this editor is associated with.
+    file_path: Option<std::path::PathBuf>,
+    /// Whether the buffer has been modified since last save.
+    modified: bool,
 }
 
 impl Editor {
@@ -37,6 +41,8 @@ impl Editor {
             cursor: Cursor::default(),
             selection: Selection::default(),
             history: History::new(),
+            file_path: None,
+            modified: false,
         }
     }
 
@@ -51,6 +57,8 @@ impl Editor {
             cursor: Cursor::default(),
             selection: Selection::default(),
             history: History::new(),
+            file_path: Some(path.to_path_buf()),
+            modified: false,
         })
     }
 
@@ -62,6 +70,8 @@ impl Editor {
             cursor: Cursor::default(),
             selection: Selection::default(),
             history: History::new(),
+            file_path: None,
+            modified: false,
         }
     }
 
@@ -70,6 +80,54 @@ impl Editor {
         let max_line = self.buffer.line_count().saturating_sub(1);
         self.cursor = Cursor::new(line.min(max_line), 0);
         self.selection = Selection::collapsed(self.cursor);
+    }
+
+    /// Save the buffer to the current file path.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if no file path is set or if the file cannot be written.
+    pub fn save(&mut self) -> std::io::Result<()> {
+        // Clone needed because self.buffer.save() borrows self mutably via modified = false
+        let path = self
+            .file_path
+            .clone()
+            .ok_or_else(|| std::io::Error::other("no file path set"))?;
+        self.buffer.save(&path)?;
+        self.modified = false;
+        Ok(())
+    }
+
+    /// Save the buffer to a specific path and update the file path.
+    ///
+    /// # Errors
+    /// Returns an `io::Error` if the file cannot be written.
+    pub fn save_as(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.buffer.save(path)?;
+        self.file_path = Some(path.to_path_buf());
+        self.modified = false;
+        Ok(())
+    }
+
+    /// Returns just the filename portion of the file path, if any.
+    #[must_use]
+    pub fn file_name(&self) -> Option<&str> {
+        self.file_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+    }
+
+    /// Returns the full file path, if any.
+    #[must_use]
+    pub fn file_path(&self) -> Option<&std::path::Path> {
+        self.file_path.as_deref()
+    }
+
+    /// Returns whether the buffer has been modified since last save.
+    // TODO: Track save-point to correctly reset modified state after undo to saved state
+    #[must_use]
+    pub fn is_modified(&self) -> bool {
+        self.modified
     }
 
     /// Insert a character at the cursor position.
@@ -84,6 +142,7 @@ impl Editor {
         self.history.push(EditOperation::Insert { pos, text });
         self.cursor.move_right(&self.buffer);
         self.collapse_selection();
+        self.modified = true;
         Ok(())
     }
 
@@ -104,6 +163,7 @@ impl Editor {
             .push(EditOperation::Delete { pos, text: deleted });
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
+        self.modified = true;
         Ok(())
     }
 
@@ -128,6 +188,7 @@ impl Editor {
         });
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
+        self.modified = true;
         Ok(())
     }
 
@@ -149,6 +210,7 @@ impl Editor {
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.collapse_selection();
+        self.modified = true;
         Ok(())
     }
 
@@ -211,6 +273,7 @@ impl Editor {
         let new_offset = pos + text.chars().count();
         self.set_cursor_from_offset(new_offset);
         self.collapse_selection();
+        self.modified = true;
         Ok(())
     }
 
@@ -267,6 +330,7 @@ impl Editor {
             });
             self.history.break_group();
             self.history.enable_grouping();
+            self.modified = true;
         }
         self.cursor = start;
         self.cursor.clamp_to_buffer(&self.buffer);
@@ -663,6 +727,114 @@ mod tests {
         ed.cursor = Cursor::new(0, 5);
         ed.cursor_right();
         assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_from_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("rira_test_editor_from_file.txt");
+        std::fs::write(&path, "hello from file").expect("write should succeed");
+        let ed = Editor::from_file(&path).expect("from_file should succeed");
+        assert_eq!(ed.buffer.to_string(), "hello from file");
+        assert_eq!(ed.file_path(), Some(path.as_path()));
+        assert!(!ed.is_modified());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_and_save_as() {
+        let dir = std::env::temp_dir();
+        let path1 = dir.join("rira_test_editor_save1.txt");
+        let path2 = dir.join("rira_test_editor_save2.txt");
+
+        // save_as sets the path
+        let mut ed = Editor::from_text("content");
+        ed.insert_char('!').expect("insert should succeed");
+        assert!(ed.is_modified());
+        ed.save_as(&path1).expect("save_as should succeed");
+        assert!(!ed.is_modified());
+        assert_eq!(ed.file_path(), Some(path1.as_path()));
+
+        // save uses the existing path
+        ed.insert_char('?').expect("insert should succeed");
+        assert!(ed.is_modified());
+        ed.save().expect("save should succeed");
+        assert!(!ed.is_modified());
+
+        // save_as to a different path updates the path
+        ed.save_as(&path2).expect("save_as should succeed");
+        assert_eq!(ed.file_path(), Some(path2.as_path()));
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn test_save_without_path_fails() {
+        let mut ed = Editor::from_text("content");
+        let result = ed.save();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_file_name() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("rira_test_file_name.txt");
+        std::fs::write(&path, "hello").expect("write should succeed");
+        let ed = Editor::from_file(&path).expect("from_file should succeed");
+        assert_eq!(ed.file_name(), Some("rira_test_file_name.txt"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_file_name_none_for_new() {
+        let ed = Editor::new();
+        assert_eq!(ed.file_name(), None);
+    }
+
+    #[test]
+    fn test_is_modified_tracking() {
+        let mut ed = Editor::new();
+        assert!(!ed.is_modified());
+
+        ed.insert_char('a').expect("insert should succeed");
+        assert!(ed.is_modified());
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("rira_test_modified_tracking.txt");
+        ed.save_as(&path).expect("save_as should succeed");
+        assert!(!ed.is_modified());
+
+        ed.backspace().expect("backspace should succeed");
+        assert!(ed.is_modified());
+
+        ed.save().expect("save should succeed");
+        assert!(!ed.is_modified());
+
+        ed.newline().expect("newline should succeed");
+        assert!(ed.is_modified());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_is_modified_after_delete() {
+        let mut ed = Editor::from_text("hello");
+        assert!(!ed.is_modified());
+
+        ed.cursor = Cursor::new(0, 0);
+        ed.collapse_selection();
+        ed.delete_char().expect("delete should succeed");
+        assert!(ed.is_modified());
+    }
+
+    #[test]
+    fn test_is_modified_after_paste() {
+        let mut ed = Editor::new();
+        assert!(!ed.is_modified());
+
+        ed.paste("hello").expect("paste should succeed");
+        assert!(ed.is_modified());
     }
 }
 
