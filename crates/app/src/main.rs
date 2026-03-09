@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -15,6 +15,8 @@ use winit::window::{Window, WindowAttributes, WindowId};
 struct App {
     window: Option<Arc<Window>>,
     terminal: Option<Terminal<WgpuBackend>>,
+    /// Current cursor position in physical pixels for title bar hit testing
+    cursor_position: (f64, f64),
 }
 
 impl App {
@@ -22,6 +24,7 @@ impl App {
         Self {
             window: None,
             terminal: None,
+            cursor_position: (0.0, 0.0),
         }
     }
 
@@ -80,6 +83,21 @@ impl ApplicationHandler for App {
         let attrs = WindowAttributes::default()
             .with_title("rira")
             .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0));
+
+        // On macOS, use transparent titlebar with fullsize content view
+        // to keep native traffic light buttons while rendering our own title bar
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs
+                .with_titlebar_transparent(true)
+                .with_title_hidden(true)
+                .with_fullsize_content_view(true)
+        };
+
+        // On non-macOS platforms, remove decorations entirely
+        #[cfg(not(target_os = "macos"))]
+        let attrs = attrs.with_decorations(false);
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -175,6 +193,29 @@ impl ApplicationHandler for App {
                         // Request redraw to show any visual feedback
                         if let Some(window) = &self.window {
                             window.request_redraw();
+                        }
+                    }
+                }
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = (position.x, position.y);
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // If the click is in the title bar area, initiate window drag
+                if let Some(terminal) = self.terminal.as_ref() {
+                    let scale_factor = terminal.backend().window().scale_factor();
+                    let physical_y = self.cursor_position.1 * scale_factor;
+                    if terminal.backend().is_in_title_bar(0.0, physical_y as f32) {
+                        if let Some(window) = &self.window {
+                            if let Err(e) = window.drag_window() {
+                                log::warn!("Failed to drag window: {e}");
+                            }
                         }
                     }
                 }

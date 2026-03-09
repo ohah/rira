@@ -19,6 +19,16 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 const DEFAULT_LINE_HEIGHT: f32 = 20.0;
 /// Default cell width for monospace font (approximate, measured at init)
 const DEFAULT_CELL_WIDTH: f32 = 9.6;
+/// Height of the custom title bar in logical pixels
+const TITLE_BAR_HEIGHT: f32 = 38.0;
+/// Title bar background color (slightly lighter than editor background)
+const TITLE_BAR_BG: (u8, u8, u8) = (45, 45, 45);
+/// Title bar text color
+const TITLE_BAR_FG: (u8, u8, u8) = (180, 180, 180);
+/// Title bar font size
+const TITLE_BAR_FONT_SIZE: f32 = 13.0;
+/// Title bar bottom border color (subtle separator)
+const TITLE_BAR_BORDER: (u8, u8, u8) = (60, 60, 60);
 
 /// Errors that can occur in the wgpu backend.
 #[derive(Debug)]
@@ -110,6 +120,12 @@ pub struct WgpuBackend {
     bind_group: wgpu::BindGroup,
     /// Render pipeline for fullscreen blit
     render_pipeline: wgpu::RenderPipeline,
+    /// Title bar height in physical pixels (accounts for scale factor)
+    title_bar_height_px: u32,
+    /// Current title string displayed in the title bar
+    title: String,
+    /// Scale factor for the window
+    scale_factor: f64,
 }
 
 impl WgpuBackend {
@@ -125,9 +141,13 @@ impl WgpuBackend {
         let scale_factor = window.scale_factor();
         let font = Self::init_font(scale_factor);
 
+        let scale_factor = window.scale_factor();
         let size = window.inner_size();
+        let title_bar_height_px = (TITLE_BAR_HEIGHT * scale_factor as f32) as u32;
+
+        let content_height = size.height.saturating_sub(title_bar_height_px);
         let grid_cols = (size.width as f32 / font.cell_width) as u16;
-        let grid_rows = (size.height as f32 / font.cell_height) as u16;
+        let grid_rows = (content_height as f32 / font.cell_height) as u16;
 
         let buf_width = size.width.max(1);
         let buf_height = size.height.max(1);
@@ -151,6 +171,9 @@ impl WgpuBackend {
             texture,
             bind_group,
             render_pipeline,
+            title_bar_height_px,
+            title: String::from("rira"),
+            scale_factor,
         })
     }
 
@@ -352,8 +375,12 @@ impl WgpuBackend {
             .surface
             .configure(&self.gpu.device, &self.gpu.surface_config);
 
+        self.scale_factor = self.window.scale_factor();
+        self.title_bar_height_px = (TITLE_BAR_HEIGHT * self.scale_factor as f32) as u32;
+
+        let content_height = height.saturating_sub(self.title_bar_height_px);
         self.grid_cols = (width as f32 / self.font.cell_width) as u16;
-        self.grid_rows = (height as f32 / self.font.cell_height) as u16;
+        self.grid_rows = (content_height as f32 / self.font.cell_height) as u16;
 
         self.buf_width = width;
         self.buf_height = height;
@@ -476,10 +503,188 @@ impl WgpuBackend {
         self.font.cell_height
     }
 
+    /// Title bar height in physical pixels.
+    pub fn title_bar_height_px(&self) -> u32 {
+        self.title_bar_height_px
+    }
+
+    /// Set the title string displayed in the custom title bar.
+    pub fn set_title(&mut self, title: &str) {
+        self.title = title.to_string();
+    }
+
+    /// Check if a physical pixel coordinate is within the title bar area.
+    pub fn is_in_title_bar(&self, _x: f32, y: f32) -> bool {
+        y < self.title_bar_height_px as f32
+    }
+
+    /// Render the custom title bar directly into the pixel buffer.
+    ///
+    /// This draws a solid background, a bottom border, and centered title text.
+    /// Must be called BEFORE ratatui content is rendered (as part of clear or
+    /// at the beginning of each frame).
+    pub fn render_title_bar(&mut self) {
+        let tb_h = self.title_bar_height_px;
+        let w = self.buf_width;
+
+        // Fill title bar background
+        for y in 0..tb_h {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                if idx + 3 < self.pixel_buffer.len() {
+                    self.pixel_buffer[idx] = TITLE_BAR_BG.0;
+                    self.pixel_buffer[idx + 1] = TITLE_BAR_BG.1;
+                    self.pixel_buffer[idx + 2] = TITLE_BAR_BG.2;
+                    self.pixel_buffer[idx + 3] = 255;
+                }
+            }
+        }
+
+        // Draw 1px bottom border
+        if tb_h > 0 {
+            let border_y = tb_h - 1;
+            for x in 0..w {
+                let idx = ((border_y * w + x) * 4) as usize;
+                if idx + 3 < self.pixel_buffer.len() {
+                    self.pixel_buffer[idx] = TITLE_BAR_BORDER.0;
+                    self.pixel_buffer[idx + 1] = TITLE_BAR_BORDER.1;
+                    self.pixel_buffer[idx + 2] = TITLE_BAR_BORDER.2;
+                    self.pixel_buffer[idx + 3] = 255;
+                }
+            }
+        }
+
+        // Render centered title text using cosmic-text
+        let scale = self.scale_factor as f32;
+        let font_size = TITLE_BAR_FONT_SIZE * scale;
+        let line_height = font_size * 1.3;
+        let metrics = Metrics::new(font_size, line_height);
+        let mut buf = CosmicBuffer::new(&mut self.font.font_system, metrics);
+        buf.set_text(
+            &mut self.font.font_system,
+            &self.title,
+            &Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+            None,
+        );
+        buf.shape_until_scroll(&mut self.font.font_system, false);
+
+        // Calculate text width for centering
+        let text_width: f32 = buf
+            .layout_runs()
+            .next()
+            .map(|run| run.glyphs.iter().map(|g| g.w).sum())
+            .unwrap_or(0.0);
+
+        let text_x = ((w as f32 - text_width) / 2.0).max(0.0);
+        // Vertically center in title bar
+        let text_y = ((tb_h as f32 - line_height) / 2.0).max(0.0);
+
+        // Re-create buffer (borrow checker workaround since we need font_system for both)
+        let mut buf2 = CosmicBuffer::new(&mut self.font.font_system, metrics);
+        buf2.set_text(
+            &mut self.font.font_system,
+            &self.title,
+            &Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+            None,
+        );
+        buf2.shape_until_scroll(&mut self.font.font_system, false);
+
+        for run in buf2.layout_runs() {
+            for glyph in run.glyphs {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                let image = self
+                    .font
+                    .swash_cache
+                    .get_image(&mut self.font.font_system, physical.cache_key)
+                    .clone();
+
+                if let Some(ref img) = image {
+                    let glyph_x = text_x as i32 + physical.x + img.placement.left;
+                    let glyph_y =
+                        text_y as i32 + (run.line_y as i32) + physical.y - img.placement.top;
+
+                    for gy in 0..img.placement.height as i32 {
+                        for gx in 0..img.placement.width as i32 {
+                            let dest_x = glyph_x + gx;
+                            let dest_y = glyph_y + gy;
+
+                            if dest_x < 0
+                                || dest_y < 0
+                                || dest_x >= w as i32
+                                || dest_y >= tb_h as i32
+                            {
+                                continue;
+                            }
+
+                            let src_idx = (gy as u32 * img.placement.width + gx as u32) as usize;
+
+                            let alpha = match img.content {
+                                cosmic_text::SwashContent::Mask => {
+                                    img.data.get(src_idx).copied().unwrap_or(0)
+                                }
+                                cosmic_text::SwashContent::Color => {
+                                    img.data.get(src_idx * 4 + 3).copied().unwrap_or(0)
+                                }
+                                cosmic_text::SwashContent::SubpixelMask => {
+                                    img.data.get(src_idx * 3 + 1).copied().unwrap_or(0)
+                                }
+                            };
+
+                            if alpha == 0 {
+                                continue;
+                            }
+
+                            let idx = ((dest_y as u32 * w + dest_x as u32) * 4) as usize;
+                            if idx + 3 < self.pixel_buffer.len() {
+                                let a = alpha as f32 / 255.0;
+                                let inv_a = 1.0 - a;
+                                match img.content {
+                                    cosmic_text::SwashContent::Color => {
+                                        let sr = img.data.get(src_idx * 4).copied().unwrap_or(0);
+                                        let sg =
+                                            img.data.get(src_idx * 4 + 1).copied().unwrap_or(0);
+                                        let sb =
+                                            img.data.get(src_idx * 4 + 2).copied().unwrap_or(0);
+                                        self.pixel_buffer[idx] =
+                                            blend(sr, self.pixel_buffer[idx], a, inv_a);
+                                        self.pixel_buffer[idx + 1] =
+                                            blend(sg, self.pixel_buffer[idx + 1], a, inv_a);
+                                        self.pixel_buffer[idx + 2] =
+                                            blend(sb, self.pixel_buffer[idx + 2], a, inv_a);
+                                    }
+                                    _ => {
+                                        self.pixel_buffer[idx] =
+                                            blend(TITLE_BAR_FG.0, self.pixel_buffer[idx], a, inv_a);
+                                        self.pixel_buffer[idx + 1] = blend(
+                                            TITLE_BAR_FG.1,
+                                            self.pixel_buffer[idx + 1],
+                                            a,
+                                            inv_a,
+                                        );
+                                        self.pixel_buffer[idx + 2] = blend(
+                                            TITLE_BAR_FG.2,
+                                            self.pixel_buffer[idx + 2],
+                                            a,
+                                            inv_a,
+                                        );
+                                    }
+                                }
+                                self.pixel_buffer[idx + 3] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Render a single cell at grid position (col, row) into the pixel buffer.
+    /// The cell is offset by the title bar height so ratatui content starts below it.
     fn render_cell(&mut self, col: u16, row: u16, cell: &Cell) {
         let px_x = (col as f32 * self.font.cell_width) as u32;
-        let px_y = (row as f32 * self.font.cell_height) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
         let cw = self.font.cell_width.ceil() as u32;
         let ch = self.font.cell_height.ceil() as u32;
 
@@ -607,9 +812,10 @@ impl WgpuBackend {
     }
 
     /// Render a block cursor at the given grid position.
+    /// The cursor is offset by the title bar height to match the content area.
     fn render_cursor(&mut self, col: u16, row: u16) {
         let px_x = (col as f32 * self.font.cell_width) as u32;
-        let px_y = (row as f32 * self.font.cell_height) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
         let cw = self.font.cell_width.ceil() as u32;
         let ch = self.font.cell_height.ceil() as u32;
 
@@ -673,6 +879,8 @@ impl ratatui::backend::Backend for WgpuBackend {
 
     fn clear(&mut self) -> Result<(), Self::Error> {
         self.pixel_buffer.fill(0);
+        // Re-render title bar after clearing the pixel buffer
+        self.render_title_bar();
         Ok(())
     }
 
