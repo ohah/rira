@@ -1,5 +1,9 @@
 //! rira-ui: File tree, command palette, tabs, diff view (ratatui widgets)
 
+mod gutter;
+
+pub use gutter::LineNumberGutter;
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
