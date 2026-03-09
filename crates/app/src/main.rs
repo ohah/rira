@@ -40,6 +40,8 @@ struct App {
     ime_composing: bool,
     /// Current modifier key state.
     modifiers: ModifiersState,
+    /// System clipboard for copy/paste/cut
+    clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -52,6 +54,7 @@ impl App {
             ime_preedit: String::new(),
             ime_composing: false,
             modifiers: ModifiersState::empty(),
+            clipboard: arboard::Clipboard::new().ok(),
         }
     }
 
@@ -386,16 +389,62 @@ impl ApplicationHandler for App {
 
                 // Handle Cmd+key shortcuts before regular key handling
                 if is_cmd_pressed(&self.modifiers) {
-                    match &logical_key {
-                        Key::Character(ch) if ch.as_str() == "s" => {
-                            self.handle_save();
-                            return;
+                    if let Key::Character(ch) = &logical_key {
+                        match ch.as_str() {
+                            "s" => {
+                                self.handle_save();
+                                return;
+                            }
+                            "o" => {
+                                self.handle_open();
+                                return;
+                            }
+                            "c" => {
+                                if let Some(text) = self.editor.copy() {
+                                    if let Some(cb) = self.clipboard.as_mut() {
+                                        if let Err(e) = cb.set_text(&text) {
+                                            log::error!("Failed to set clipboard: {e}");
+                                        }
+                                    }
+                                }
+                                self.request_redraw();
+                                return;
+                            }
+                            "v" => {
+                                if let Some(cb) = self.clipboard.as_mut() {
+                                    match cb.get_text() {
+                                        Ok(text) => {
+                                            if let Err(e) = self.editor.paste(&text) {
+                                                log::error!("Paste failed: {e}");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to get clipboard: {e}");
+                                        }
+                                    }
+                                }
+                                self.render();
+                                return;
+                            }
+                            "x" => {
+                                match self.editor.cut() {
+                                    Ok(Some(text)) => {
+                                        if let Some(cb) = self.clipboard.as_mut() {
+                                            if let Err(e) = cb.set_text(&text) {
+                                                log::error!("Failed to set clipboard: {e}");
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        log::error!("Cut failed: {e}");
+                                    }
+                                }
+                                self.render();
+                                return;
+                            }
+                            _ => {}
                         }
-                        Key::Character(ch) if ch.as_str() == "o" => {
-                            self.handle_open();
-                            return;
-                        }
-                        _ => {}
                     }
                 }
 
@@ -423,9 +472,12 @@ impl ApplicationHandler for App {
                         self.render();
                     }
                     Key::Character(ch) => {
-                        for c in ch.chars() {
-                            if let Err(e) = self.editor.insert_char(c) {
-                                log::error!("Insert char failed: {e}");
+                        // Don't insert characters when Cmd is held (shortcuts)
+                        if !is_cmd_pressed(&self.modifiers) {
+                            for c in ch.chars() {
+                                if let Err(e) = self.editor.insert_char(c) {
+                                    log::error!("Insert char failed: {e}");
+                                }
                             }
                         }
                         self.render();

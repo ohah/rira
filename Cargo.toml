@@ -70,5 +70,8 @@ clap = { version = "4", features = ["derive"] }
 # File dialogs
 rfd = "0.15"
 
+# Clipboard
+arboard = "3"
+
 # Testing
 proptest = "1"
