@@ -151,6 +151,10 @@ impl ApplicationHandler for App {
                     terminal
                         .backend_mut()
                         .resize(new_size.width, new_size.height);
+                    // Force ratatui to redraw all cells since pixel buffer was recreated
+                    if let Err(e) = terminal.clear() {
+                        log::error!("Failed to clear terminal after resize: {e}");
+                    }
                 }
                 // Re-render after resize
                 self.render();
@@ -160,6 +164,10 @@ impl ApplicationHandler for App {
                 log::info!("Scale factor changed to {scale_factor}");
                 if let Some(terminal) = self.terminal.as_mut() {
                     terminal.backend_mut().update_scale_factor(scale_factor);
+                    // Force ratatui to redraw all cells since font metrics changed
+                    if let Err(e) = terminal.clear() {
+                        log::error!("Failed to clear terminal after scale change: {e}");
+                    }
                 }
                 // Re-render after DPI change
                 self.render();
