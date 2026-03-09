@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
-use rira_editor::Editor;
+use rira_editor::{Editor, HitTestConfig};
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
@@ -536,16 +536,44 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                // If the click is in the title bar area, initiate window drag
                 if let Some(terminal) = self.terminal.as_ref() {
-                    let scale_factor = terminal.backend().window().scale_factor();
+                    let backend = terminal.backend();
+                    let scale_factor = backend.window().scale_factor();
                     let physical_y = self.cursor_position.1 * scale_factor;
-                    if terminal.backend().is_in_title_bar(0.0, physical_y as f32) {
+
+                    if backend.is_in_title_bar(0.0, physical_y as f32) {
+                        // Click is in the title bar area, initiate window drag
                         if let Some(window) = &self.window {
                             if let Err(e) = window.drag_window() {
                                 log::warn!("Failed to drag window: {e}");
                             }
                         }
+                    } else {
+                        // Click is in the content area, move cursor
+                        let cell_width = backend.cell_width() as f64 / scale_factor;
+                        let cell_height = backend.cell_height() as f64 / scale_factor;
+                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
+
+                        // Content starts after title bar + 1 cell border (ratatui Block)
+                        let content_x = cell_width; // 1 cell for left border
+                        let content_y = title_bar_height + cell_height; // title bar + 1 cell for top border
+
+                        let config = HitTestConfig {
+                            cell_width,
+                            line_height: cell_height,
+                            content_x,
+                            content_y,
+                            scroll_offset: 0,
+                        };
+
+                        let result = config.hit_test(
+                            self.cursor_position.0,
+                            self.cursor_position.1,
+                            &self.editor.buffer,
+                        );
+
+                        self.editor.move_cursor_to(result.line, result.col);
+                        self.render();
                     }
                 }
             }

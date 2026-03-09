@@ -3,11 +3,13 @@
 pub mod buffer;
 pub mod cursor;
 pub mod history;
+pub mod hit_test;
 pub mod selection;
 
 pub use buffer::{Buffer, BufferError};
 pub use cursor::Cursor;
 pub use history::{EditOperation, History};
+pub use hit_test::{HitTestConfig, HitTestResult};
 pub use selection::Selection;
 
 /// Returns the crate version.
@@ -323,6 +325,15 @@ impl Editor {
     /// Move cursor to the end of the current line.
     pub fn move_to_line_end(&mut self) {
         self.cursor.move_to_line_end(&self.buffer);
+        self.collapse_selection();
+    }
+
+    /// Move cursor to the given line and column, clamping to buffer bounds.
+    ///
+    /// This collapses any active selection.
+    pub fn move_cursor_to(&mut self, line: usize, col: usize) {
+        self.cursor = Cursor::new(line, col);
+        self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
     }
 
@@ -708,6 +719,14 @@ mod tests {
     }
 
     #[test]
+    fn test_move_cursor_to() {
+        let mut ed = Editor::from_text("hello\nworld\nfoo");
+        ed.move_cursor_to(1, 3);
+        assert_eq!(ed.cursor, Cursor::new(1, 3));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
     fn test_set_cursor_line_clamps() {
         let mut ed = Editor::from_text("line0\nline1");
         ed.set_cursor_line(100);
@@ -769,6 +788,36 @@ mod tests {
         let result = ed.cut().expect("cut should succeed");
         assert_eq!(result, Some("hello".to_string()));
         assert_eq!(ed.buffer.to_string(), "");
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_move_cursor_to_clamps_line() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.move_cursor_to(100, 0);
+        assert_eq!(ed.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_move_cursor_to_clamps_col() {
+        let mut ed = Editor::from_text("hi\nworld");
+        ed.move_cursor_to(0, 100);
+        assert_eq!(ed.cursor, Cursor::new(0, 2));
+    }
+
+    #[test]
+    fn test_move_cursor_to_collapses_selection() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.selection = Selection::new(Cursor::new(0, 0), Cursor::new(0, 5));
+        ed.move_cursor_to(1, 2);
+        assert!(ed.selection.is_empty());
+        assert_eq!(ed.cursor, Cursor::new(1, 2));
+    }
+
+    #[test]
+    fn test_move_cursor_to_empty_buffer() {
+        let mut ed = Editor::new();
+        ed.move_cursor_to(5, 5);
         assert_eq!(ed.cursor, Cursor::new(0, 0));
     }
 
