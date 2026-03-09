@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
-use rira_editor::{Cursor, Editor};
+use rira_editor::Editor;
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
@@ -424,19 +424,12 @@ fn main() {
     let editor = if let Some(ref file_arg) = args.file {
         let (path, line) = parse_file_arg(file_arg);
 
-        match rira_editor::Buffer::from_file(&path) {
-            Ok(buffer) => {
-                let line_count = buffer.line_count();
-                // Convert 1-based line to 0-based, default to 0
+        match Editor::from_file(&path) {
+            Ok(mut ed) => {
                 let target_line = line
-                    .map(|l| if l == 0 { 0 } else { l.saturating_sub(1) })
+                    .map(|l| l.saturating_sub(1)) // 1-based to 0-based, 0 becomes 0
                     .unwrap_or(0);
-                // Clamp to valid range
-                let target_line = target_line.min(line_count.saturating_sub(1));
-
-                let mut ed = Editor::new();
-                ed.buffer = buffer;
-                ed.cursor = Cursor::new(target_line, 0);
+                ed.set_cursor_line(target_line);
                 log::info!(
                     "Opened file: {} at line {}",
                     path.display(),
