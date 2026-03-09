@@ -32,6 +32,12 @@ impl App {
         }
     }
 
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     fn render(&mut self) {
         let Some(terminal) = self.terminal.as_mut() else {
             return;
@@ -55,7 +61,8 @@ impl App {
 
             let mut lines: Vec<Line<'_>> = Vec::new();
 
-            // Render editor buffer content with cursor
+            // split('\n') matches the editor's line model:
+            // "hello\n" → ["hello", ""] which correctly represents 2 lines.
             let text_lines: Vec<&str> = if editor_content.is_empty() {
                 vec![""]
             } else {
@@ -278,45 +285,30 @@ impl ApplicationHandler for App {
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         self.editor.cursor_left();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         self.editor.cursor_right();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.editor.cursor_up();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.editor.cursor_down();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     Key::Named(NamedKey::Home) => {
                         self.editor.move_to_line_start();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     Key::Named(NamedKey::End) => {
                         self.editor.move_to_line_end();
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                     _ => {
-                        // Request redraw to show any visual feedback
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                        self.request_redraw();
                     }
                 }
             }
