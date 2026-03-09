@@ -407,7 +407,6 @@ impl ApplicationHandler for App {
                                         }
                                     }
                                 }
-                                self.request_redraw();
                                 return;
                             }
                             "v" => {
@@ -439,6 +438,22 @@ impl ApplicationHandler for App {
                                     Err(e) => {
                                         log::error!("Cut failed: {e}");
                                     }
+                                }
+                                self.render();
+                                return;
+                            }
+                            "a" => {
+                                self.editor.select_all();
+                                self.request_redraw();
+                                return;
+                            }
+                            "z" => {
+                                if self.modifiers.shift_key() {
+                                    if let Err(e) = self.editor.redo() {
+                                        log::error!("Redo failed: {e}");
+                                    }
+                                } else if let Err(e) = self.editor.undo() {
+                                    log::error!("Undo failed: {e}");
                                 }
                                 self.render();
                                 return;
