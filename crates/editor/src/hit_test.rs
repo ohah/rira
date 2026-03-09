@@ -60,32 +60,16 @@ impl HitTestConfig {
         let col = if relative_x < 0.0 || self.cell_width <= 0.0 {
             0
         } else {
-            // Round to nearest character cell
+            // Use .round() so clicking the left half of a cell places cursor before it,
+            // and clicking the right half places cursor after it.
             (relative_x / self.cell_width).round() as usize
         };
 
         // Clamp col to the content length of the line (excluding trailing newline)
-        let max_col = line_content_len(buffer, line);
+        let max_col = buffer.line_content_len(line);
         let col = col.min(max_col);
 
         HitTestResult { line, col }
-    }
-}
-
-/// Get the content length of a line (excluding trailing newline).
-fn line_content_len(buffer: &Buffer, line: usize) -> usize {
-    let total_chars = buffer.line_len_chars(line);
-    if total_chars == 0 {
-        return 0;
-    }
-    if let Some(text) = buffer.line(line) {
-        if text.ends_with('\n') {
-            total_chars.saturating_sub(1)
-        } else {
-            total_chars
-        }
-    } else {
-        0
     }
 }
 

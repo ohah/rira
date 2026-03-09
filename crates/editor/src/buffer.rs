@@ -115,6 +115,24 @@ impl Buffer {
         self.rope.line(line).len_chars()
     }
 
+    /// Get the content length of a line (excluding trailing newline).
+    #[must_use]
+    pub fn line_content_len(&self, line: usize) -> usize {
+        let total_chars = self.line_len_chars(line);
+        if total_chars == 0 {
+            return 0;
+        }
+        if let Some(text) = self.line(line) {
+            if text.ends_with('\n') {
+                total_chars.saturating_sub(1)
+            } else {
+                total_chars
+            }
+        } else {
+            0
+        }
+    }
+
     /// Get a slice of text as a String.
     ///
     /// # Errors
