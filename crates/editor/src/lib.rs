@@ -193,6 +193,42 @@ impl Editor {
         Ok(())
     }
 
+    /// Move cursor left by one character.
+    pub fn cursor_left(&mut self) {
+        self.cursor.move_left(&self.buffer);
+        self.collapse_selection();
+    }
+
+    /// Move cursor right by one character.
+    pub fn cursor_right(&mut self) {
+        self.cursor.move_right(&self.buffer);
+        self.collapse_selection();
+    }
+
+    /// Move cursor up by one line.
+    pub fn cursor_up(&mut self) {
+        self.cursor.move_up(&self.buffer);
+        self.collapse_selection();
+    }
+
+    /// Move cursor down by one line.
+    pub fn cursor_down(&mut self) {
+        self.cursor.move_down(&self.buffer);
+        self.collapse_selection();
+    }
+
+    /// Move cursor to the start of the current line.
+    pub fn move_to_line_start(&mut self) {
+        self.cursor.move_to_line_start();
+        self.collapse_selection();
+    }
+
+    /// Move cursor to the end of the current line.
+    pub fn move_to_line_end(&mut self) {
+        self.cursor.move_to_line_end(&self.buffer);
+        self.collapse_selection();
+    }
+
     /// Helper: delete the current selection if any.
     fn delete_selection_if_any(&mut self) -> Result<(), BufferError> {
         if self.selection.is_empty() {
@@ -486,6 +522,71 @@ mod tests {
         }
         assert_eq!(ed.buffer.to_string(), "Hello, world!");
         assert_eq!(ed.cursor, Cursor::new(0, 13));
+    }
+
+    #[test]
+    fn test_editor_cursor_left() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.cursor_left();
+        assert_eq!(ed.cursor, Cursor::new(0, 2));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_editor_cursor_right() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.cursor_right();
+        assert_eq!(ed.cursor, Cursor::new(0, 4));
+        assert!(ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_editor_cursor_up() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(1, 3);
+        ed.collapse_selection();
+        ed.cursor_up();
+        assert_eq!(ed.cursor, Cursor::new(0, 3));
+    }
+
+    #[test]
+    fn test_editor_cursor_down() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.cursor_down();
+        assert_eq!(ed.cursor, Cursor::new(1, 3));
+    }
+
+    #[test]
+    fn test_editor_move_to_line_start() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 4);
+        ed.collapse_selection();
+        ed.move_to_line_start();
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_editor_move_to_line_end() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(0, 0);
+        ed.collapse_selection();
+        ed.move_to_line_end();
+        assert_eq!(ed.cursor, Cursor::new(0, 5));
+    }
+
+    #[test]
+    fn test_editor_cursor_movement_collapses_selection() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.selection = Selection::new(Cursor::new(0, 0), Cursor::new(0, 5));
+        ed.cursor = Cursor::new(0, 5);
+        ed.cursor_right();
+        assert!(ed.selection.is_empty());
     }
 }
 
