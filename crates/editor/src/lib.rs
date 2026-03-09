@@ -433,6 +433,7 @@ impl Editor {
         self.cursor = start;
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
