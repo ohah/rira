@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
-use rira_editor::{Editor, HitTestConfig};
+use rira_editor::{Cursor, Editor, HitTestConfig};
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -42,6 +42,8 @@ struct App {
     modifiers: ModifiersState,
     /// System clipboard for copy/paste/cut
     clipboard: Option<arboard::Clipboard>,
+    /// Whether left mouse button is currently pressed (for drag selection)
+    mouse_dragging: bool,
 }
 
 impl App {
@@ -55,6 +57,7 @@ impl App {
             ime_composing: false,
             modifiers: ModifiersState::empty(),
             clipboard: arboard::Clipboard::new().ok(),
+            mouse_dragging: false,
         }
     }
 
@@ -695,6 +698,45 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
+
+                // Handle drag selection
+                if self.mouse_dragging {
+                    if let Some(terminal) = self.terminal.as_ref() {
+                        let backend = terminal.backend();
+                        let scale_factor = backend.window().scale_factor();
+                        let cell_width = backend.cell_width() as f64 / scale_factor;
+                        let cell_height = backend.cell_height() as f64 / scale_factor;
+                        let title_bar_height =
+                            backend.title_bar_height_px() as f64 / scale_factor;
+
+                        let config = HitTestConfig {
+                            cell_width,
+                            line_height: cell_height,
+                            content_x: cell_width,
+                            content_y: title_bar_height + cell_height,
+                            scroll_offset: self.editor.viewport.scroll_offset,
+                        };
+
+                        let result = config.hit_test(
+                            self.cursor_position.0,
+                            self.cursor_position.1,
+                            &self.editor.buffer,
+                        );
+
+                        let new_cursor = Cursor::new(result.line, result.col);
+                        self.editor.selection.cursor = new_cursor;
+                        self.editor.cursor = new_cursor;
+                        self.render();
+                    }
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.mouse_dragging = false;
             }
 
             WindowEvent::MouseInput {
@@ -729,7 +771,7 @@ impl ApplicationHandler for App {
                             line_height: cell_height,
                             content_x,
                             content_y,
-                            scroll_offset: 0,
+                            scroll_offset: self.editor.viewport.scroll_offset,
                         };
 
                         let result = config.hit_test(
@@ -739,6 +781,7 @@ impl ApplicationHandler for App {
                         );
 
                         self.editor.move_cursor_to(result.line, result.col);
+                        self.mouse_dragging = true;
                         self.render();
                     }
                 }
