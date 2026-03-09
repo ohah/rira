@@ -422,6 +422,71 @@ mod tests {
         let ed = Editor::default();
         assert_eq!(ed.buffer.char_count(), 0);
     }
+
+    #[test]
+    fn test_insert_char_updates_buffer() {
+        let mut ed = Editor::new();
+        ed.insert_char('a').expect("insert should succeed");
+        assert_eq!(ed.buffer.to_string(), "a");
+        ed.insert_char('b').expect("insert should succeed");
+        assert_eq!(ed.buffer.to_string(), "ab");
+        ed.insert_char('c').expect("insert should succeed");
+        assert_eq!(ed.buffer.to_string(), "abc");
+        assert_eq!(ed.buffer.char_count(), 3);
+    }
+
+    #[test]
+    fn test_backspace_removes_char() {
+        let mut ed = Editor::new();
+        ed.insert_char('a').expect("insert should succeed");
+        ed.insert_char('b').expect("insert should succeed");
+        ed.insert_char('c').expect("insert should succeed");
+        assert_eq!(ed.buffer.to_string(), "abc");
+
+        ed.backspace().expect("backspace should succeed");
+        assert_eq!(ed.buffer.to_string(), "ab");
+
+        ed.backspace().expect("backspace should succeed");
+        assert_eq!(ed.buffer.to_string(), "a");
+    }
+
+    #[test]
+    fn test_enter_inserts_newline() {
+        let mut ed = Editor::new();
+        ed.insert_char('a').expect("insert should succeed");
+        ed.newline().expect("newline should succeed");
+        ed.insert_char('b').expect("insert should succeed");
+        assert_eq!(ed.buffer.to_string(), "a\nb");
+        assert_eq!(ed.buffer.line_count(), 2);
+        assert_eq!(ed.cursor.line, 1);
+        assert_eq!(ed.cursor.col, 1);
+    }
+
+    #[test]
+    fn test_delete_removes_char_after_cursor() {
+        let mut ed = Editor::from_text("abc");
+        ed.cursor = Cursor::new(0, 0);
+        ed.collapse_selection();
+        ed.delete_char().expect("delete should succeed");
+        assert_eq!(ed.buffer.to_string(), "bc");
+
+        ed.delete_char().expect("delete should succeed");
+        assert_eq!(ed.buffer.to_string(), "c");
+
+        ed.delete_char().expect("delete should succeed");
+        assert_eq!(ed.buffer.to_string(), "");
+    }
+
+    #[test]
+    fn test_sequential_typing() {
+        let mut ed = Editor::new();
+        let text = "Hello, world!";
+        for ch in text.chars() {
+            ed.insert_char(ch).expect("insert should succeed");
+        }
+        assert_eq!(ed.buffer.to_string(), "Hello, world!");
+        assert_eq!(ed.cursor, Cursor::new(0, 13));
+    }
 }
 
 #[cfg(test)]
