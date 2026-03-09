@@ -337,6 +337,60 @@ impl Editor {
         self.collapse_selection();
     }
 
+    /// Move cursor left, extending selection.
+    pub fn select_left(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_left(&self.buffer);
+        self.selection.cursor = self.cursor;
+    }
+
+    /// Move cursor right, extending selection.
+    pub fn select_right(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_right(&self.buffer);
+        self.selection.cursor = self.cursor;
+    }
+
+    /// Move cursor up, extending selection.
+    pub fn select_up(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_up(&self.buffer);
+        self.selection.cursor = self.cursor;
+    }
+
+    /// Move cursor down, extending selection.
+    pub fn select_down(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_down(&self.buffer);
+        self.selection.cursor = self.cursor;
+    }
+
+    /// Select from cursor to line start (Shift+Home).
+    pub fn select_to_line_start(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_to_line_start();
+        self.selection.cursor = self.cursor;
+    }
+
+    /// Select from cursor to line end (Shift+End).
+    pub fn select_to_line_end(&mut self) {
+        if self.selection.is_empty() {
+            self.selection.anchor = self.cursor;
+        }
+        self.cursor.move_to_line_end(&self.buffer);
+        self.selection.cursor = self.cursor;
+    }
+
     /// Helper: delete the current selection if any.
     fn delete_selection_if_any(&mut self) -> Result<(), BufferError> {
         if self.selection.is_empty() {
@@ -936,6 +990,124 @@ mod tests {
 
         ed.paste("hello").expect("paste should succeed");
         assert!(ed.is_modified());
+    }
+
+    #[test]
+    fn test_select_left_from_middle() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.select_left();
+        assert_eq!(ed.cursor, Cursor::new(0, 2));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 3));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 2));
+        assert!(!ed.selection.is_empty());
+    }
+
+    #[test]
+    fn test_select_right_from_middle() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 2);
+        ed.collapse_selection();
+        ed.select_right();
+        assert_eq!(ed.cursor, Cursor::new(0, 3));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 2));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 3));
+    }
+
+    #[test]
+    fn test_select_left_wraps_to_previous_line() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(1, 0);
+        ed.collapse_selection();
+        ed.select_left();
+        assert_eq!(ed.cursor, Cursor::new(0, 5));
+        assert_eq!(ed.selection.anchor, Cursor::new(1, 0));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 5));
+    }
+
+    #[test]
+    fn test_select_right_wraps_to_next_line() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(0, 5);
+        ed.collapse_selection();
+        ed.select_right();
+        assert_eq!(ed.cursor, Cursor::new(1, 0));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 5));
+        assert_eq!(ed.selection.cursor, Cursor::new(1, 0));
+    }
+
+    #[test]
+    fn test_select_up_preserves_column() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(1, 3);
+        ed.collapse_selection();
+        ed.select_up();
+        assert_eq!(ed.cursor, Cursor::new(0, 3));
+        assert_eq!(ed.selection.anchor, Cursor::new(1, 3));
+    }
+
+    #[test]
+    fn test_select_down_preserves_column() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.select_down();
+        assert_eq!(ed.cursor, Cursor::new(1, 3));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 3));
+    }
+
+    #[test]
+    fn test_select_to_line_start() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 3);
+        ed.collapse_selection();
+        ed.select_to_line_start();
+        assert_eq!(ed.cursor, Cursor::new(0, 0));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 3));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 0));
+    }
+
+    #[test]
+    fn test_select_to_line_end() {
+        let mut ed = Editor::from_text("hello\nworld");
+        ed.cursor = Cursor::new(0, 2);
+        ed.collapse_selection();
+        ed.select_to_line_end();
+        assert_eq!(ed.cursor, Cursor::new(0, 5));
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 2));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 5));
+    }
+
+    #[test]
+    fn test_multiple_select_operations_accumulate() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 2);
+        ed.collapse_selection();
+        ed.select_right();
+        ed.select_right();
+        ed.select_right();
+        // Anchor stays at original position, cursor moves
+        assert_eq!(ed.selection.anchor, Cursor::new(0, 2));
+        assert_eq!(ed.selection.cursor, Cursor::new(0, 5));
+        assert_eq!(ed.cursor, Cursor::new(0, 5));
+        assert_eq!(
+            ed.selection.selected_text(&ed.buffer),
+            Some("llo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_select_then_regular_move_collapses() {
+        let mut ed = Editor::from_text("hello");
+        ed.cursor = Cursor::new(0, 2);
+        ed.collapse_selection();
+        ed.select_right();
+        ed.select_right();
+        assert!(!ed.selection.is_empty());
+        // Regular move collapses selection
+        ed.cursor_right();
+        assert!(ed.selection.is_empty());
     }
 }
 
