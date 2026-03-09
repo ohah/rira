@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
+use rira_editor::Editor;
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -17,6 +18,8 @@ struct App {
     terminal: Option<Terminal<WgpuBackend>>,
     /// Current cursor position in physical pixels for title bar hit testing
     cursor_position: (f64, f64),
+    /// The text editor state.
+    editor: Editor,
 }
 
 impl App {
@@ -25,6 +28,7 @@ impl App {
             window: None,
             terminal: None,
             cursor_position: (0.0, 0.0),
+            editor: Editor::new(),
         }
     }
 
@@ -32,6 +36,10 @@ impl App {
         let Some(terminal) = self.terminal.as_mut() else {
             return;
         };
+
+        let editor_content = self.editor.buffer.content();
+        let cursor_line = self.editor.cursor.line;
+        let cursor_col = self.editor.cursor.col;
 
         let result = terminal.draw(|frame| {
             let area = frame.area();
@@ -45,24 +53,60 @@ impl App {
 
             frame.render_widget(block, area);
 
-            let lines = vec![
-                Line::styled("Hello, rira!", Style::default().fg(Color::LightGreen)),
-                Line::raw(""),
-                Line::styled(
-                    format!("Window size: {}x{} cells", area.width, area.height),
-                    Style::default().fg(Color::LightYellow),
+            let mut lines: Vec<Line<'_>> = Vec::new();
+
+            // Render editor buffer content with cursor
+            let text_lines: Vec<&str> = if editor_content.is_empty() {
+                vec![""]
+            } else {
+                editor_content.split('\n').collect()
+            };
+
+            for (line_idx, line_text) in text_lines.iter().enumerate() {
+                if line_idx == cursor_line {
+                    // Build this line with a visible cursor
+                    let chars: Vec<char> = line_text.chars().collect();
+                    let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
+                    let cursor_char = if cursor_col < chars.len() {
+                        chars[cursor_col].to_string()
+                    } else {
+                        " ".to_string()
+                    };
+                    let after: String = if cursor_col + 1 < chars.len() {
+                        chars[cursor_col + 1..].iter().collect()
+                    } else {
+                        String::new()
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(before, Style::default().fg(Color::White)),
+                        Span::styled(
+                            cursor_char,
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(after, Style::default().fg(Color::White)),
+                    ]));
+                } else {
+                    lines.push(Line::styled(
+                        line_text.to_string(),
+                        Style::default().fg(Color::White),
+                    ));
+                }
+            }
+
+            // Status line at the bottom
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                format!(
+                    "Ln {}, Col {} | ESC to quit",
+                    cursor_line + 1,
+                    cursor_col + 1
                 ),
-                Line::raw(""),
-                Line::styled(
-                    "Press 'q' or Escape to quit.",
-                    Style::default().fg(Color::Gray),
-                ),
-                Line::raw(""),
-                Line::styled(
-                    "Type any key to see it in the log.",
-                    Style::default().fg(Color::Gray),
-                ),
-            ];
+                Style::default().fg(Color::DarkGray),
+            ));
 
             let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, inner);
@@ -206,9 +250,31 @@ impl ApplicationHandler for App {
                         log::info!("Escape pressed, exiting");
                         event_loop.exit();
                     }
-                    Key::Character(ch) if ch.as_str() == "q" => {
-                        log::info!("'q' pressed, exiting");
-                        event_loop.exit();
+                    Key::Named(NamedKey::Backspace) => {
+                        if let Err(e) = self.editor.backspace() {
+                            log::error!("Backspace failed: {e}");
+                        }
+                        self.render();
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        if let Err(e) = self.editor.delete_char() {
+                            log::error!("Delete failed: {e}");
+                        }
+                        self.render();
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        if let Err(e) = self.editor.newline() {
+                            log::error!("Enter/newline failed: {e}");
+                        }
+                        self.render();
+                    }
+                    Key::Character(ch) => {
+                        for c in ch.chars() {
+                            if let Err(e) = self.editor.insert_char(c) {
+                                log::error!("Insert char failed: {e}");
+                            }
+                        }
+                        self.render();
                     }
                     _ => {
                         // Request redraw to show any visual feedback
