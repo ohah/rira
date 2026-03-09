@@ -1,16 +1,21 @@
+mod cli;
+
 use std::sync::Arc;
 
+use clap::Parser;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
-use rira_editor::Editor;
+use rira_editor::{Cursor, Editor};
 use rira_renderer::WgpuBackend;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+use crate::cli::{parse_file_arg, CliArgs};
 
 /// Application state holding the renderer and terminal.
 struct App {
@@ -414,10 +419,45 @@ fn main() {
 
     log::info!("rira v{}", rira_renderer::version());
 
+    let args = CliArgs::parse();
+
+    let editor = if let Some(ref file_arg) = args.file {
+        let (path, line) = parse_file_arg(file_arg);
+
+        match rira_editor::Buffer::from_file(&path) {
+            Ok(buffer) => {
+                let line_count = buffer.line_count();
+                // Convert 1-based line to 0-based, default to 0
+                let target_line = line
+                    .map(|l| if l == 0 { 0 } else { l.saturating_sub(1) })
+                    .unwrap_or(0);
+                // Clamp to valid range
+                let target_line = target_line.min(line_count.saturating_sub(1));
+
+                let mut ed = Editor::new();
+                ed.buffer = buffer;
+                ed.cursor = Cursor::new(target_line, 0);
+                log::info!(
+                    "Opened file: {} at line {}",
+                    path.display(),
+                    target_line + 1
+                );
+                ed
+            }
+            Err(e) => {
+                log::error!("Failed to open file '{}': {e}", path.display());
+                Editor::new()
+            }
+        }
+    } else {
+        Editor::new()
+    };
+
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::new();
+    app.editor = editor;
 
     if let Err(e) = event_loop.run_app(&mut app) {
         log::error!("Event loop error: {e}");
