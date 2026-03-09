@@ -60,10 +60,7 @@ impl Editor {
         let pos = self.cursor.to_char_offset(&self.buffer);
         let text = ch.to_string();
         self.buffer.insert(pos, &text)?;
-        self.history.push(EditOperation::Insert {
-            pos,
-            text,
-        });
+        self.history.push(EditOperation::Insert { pos, text });
         self.cursor.move_right(&self.buffer);
         self.collapse_selection();
         Ok(())
@@ -82,10 +79,8 @@ impl Editor {
             return Ok(());
         }
         let deleted = self.buffer.delete(pos..pos + 1)?;
-        self.history.push(EditOperation::Delete {
-            pos,
-            text: deleted,
-        });
+        self.history
+            .push(EditOperation::Delete { pos, text: deleted });
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
         Ok(())
@@ -340,10 +335,7 @@ mod tests {
     fn test_select_all() {
         let mut ed = Editor::from_text("hello\nworld");
         ed.select_all();
-        assert_eq!(
-            ed.copy(),
-            Some("hello\nworld".to_string())
-        );
+        assert_eq!(ed.copy(), Some("hello\nworld".to_string()));
     }
 
     #[test]
