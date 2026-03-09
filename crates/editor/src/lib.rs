@@ -5,12 +5,14 @@ pub mod cursor;
 pub mod history;
 pub mod hit_test;
 pub mod selection;
+pub mod viewport;
 
 pub use buffer::{Buffer, BufferError};
 pub use cursor::Cursor;
 pub use history::{EditOperation, History};
 pub use hit_test::{HitTestConfig, HitTestResult};
 pub use selection::Selection;
+pub use viewport::Viewport;
 
 /// Returns the crate version.
 pub fn version() -> &'static str {
@@ -33,6 +35,8 @@ pub struct Editor {
     /// Whether the buffer has been modified since last save.
     // TODO: Track save-point to correctly reset modified state after undo to saved state
     modified: bool,
+    /// The viewport (scroll offset and visible lines).
+    pub viewport: Viewport,
 }
 
 impl Editor {
@@ -46,6 +50,7 @@ impl Editor {
             history: History::new(),
             file_path: None,
             modified: false,
+            viewport: Viewport::new(),
         }
     }
 
@@ -62,6 +67,7 @@ impl Editor {
             history: History::new(),
             file_path: Some(path.to_path_buf()),
             modified: false,
+            viewport: Viewport::new(),
         })
     }
 
@@ -75,6 +81,7 @@ impl Editor {
             history: History::new(),
             file_path: None,
             modified: false,
+            viewport: Viewport::new(),
         }
     }
 
@@ -146,6 +153,7 @@ impl Editor {
         self.cursor.move_right(&self.buffer);
         self.collapse_selection();
         self.modified = true;
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
@@ -167,6 +175,7 @@ impl Editor {
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
         self.modified = true;
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
@@ -192,6 +201,7 @@ impl Editor {
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
         self.modified = true;
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
@@ -214,6 +224,7 @@ impl Editor {
         self.cursor.col = 0;
         self.collapse_selection();
         self.modified = true;
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
@@ -225,6 +236,7 @@ impl Editor {
         let result = self.history.undo(&mut self.buffer)?;
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(result)
     }
 
@@ -236,6 +248,7 @@ impl Editor {
         let result = self.history.redo(&mut self.buffer)?;
         self.cursor.clamp_to_buffer(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(result)
     }
 
@@ -277,6 +290,7 @@ impl Editor {
         self.set_cursor_from_offset(new_offset);
         self.collapse_selection();
         self.modified = true;
+        self.viewport.ensure_cursor_visible(self.cursor.line);
         Ok(())
     }
 
@@ -296,36 +310,42 @@ impl Editor {
     pub fn cursor_left(&mut self) {
         self.cursor.move_left(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor right by one character.
     pub fn cursor_right(&mut self) {
         self.cursor.move_right(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor up by one line.
     pub fn cursor_up(&mut self) {
         self.cursor.move_up(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor down by one line.
     pub fn cursor_down(&mut self) {
         self.cursor.move_down(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor to the start of the current line.
     pub fn move_to_line_start(&mut self) {
         self.cursor.move_to_line_start();
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor to the end of the current line.
     pub fn move_to_line_end(&mut self) {
         self.cursor.move_to_line_end(&self.buffer);
         self.collapse_selection();
+        self.viewport.ensure_cursor_visible(self.cursor.line);
     }
 
     /// Move cursor to the given line and column, clamping to buffer bounds.

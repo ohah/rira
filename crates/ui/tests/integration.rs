@@ -15,6 +15,16 @@ use rira_ui::LineNumberGutter;
 
 /// Helper: render the editor state into a TestBackend terminal and return the buffer snapshot.
 fn render_editor(editor: &Editor, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    render_editor_with_scroll(editor, width, height, 0)
+}
+
+/// Helper: render the editor state with a scroll offset into a TestBackend terminal.
+fn render_editor_with_scroll(
+    editor: &Editor,
+    width: u16,
+    height: u16,
+    scroll_offset: usize,
+) -> ratatui::buffer::Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal creation should succeed");
 
@@ -38,6 +48,7 @@ fn render_editor(editor: &Editor, width: u16, height: u16) -> ratatui::buffer::B
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
+            let content_height = inner.height as usize;
             let mut lines: Vec<Line<'_>> = Vec::new();
 
             // split('\n') matches the editor's line model
@@ -47,7 +58,13 @@ fn render_editor(editor: &Editor, width: u16, height: u16) -> ratatui::buffer::B
                 editor_content.split('\n').collect()
             };
 
-            for (line_idx, line_text) in text_lines.iter().enumerate() {
+            let visible_end = (scroll_offset + content_height).min(text_lines.len());
+            for (line_idx, line_text) in text_lines
+                .iter()
+                .enumerate()
+                .take(visible_end)
+                .skip(scroll_offset)
+            {
                 let chars: Vec<char> = line_text.chars().collect();
 
                 if has_selection && line_idx >= sel_start.line && line_idx <= sel_end.line {
@@ -515,5 +532,99 @@ fn test_multiline_selection_renders() {
         Color::Blue,
         "Line 1 col 0 should have Blue bg, got: {:?}",
         cell.bg
+    );
+}
+
+// ============================================================================
+// Integration tests: Scrolled content rendering
+// ============================================================================
+
+#[test]
+fn test_scrolled_content_renders_from_offset() {
+    // Create editor with 10 lines
+    let mut editor = Editor::new();
+    for i in 0..10 {
+        for ch in format!("Line{i}").chars() {
+            editor.insert_char(ch).unwrap();
+        }
+        if i < 9 {
+            editor.newline().unwrap();
+        }
+    }
+
+    // Render with scroll_offset=3, so first visible line should be "Line3"
+    // height=7: 2 border rows + 5 content rows
+    let buf = render_editor_with_scroll(&editor, 40, 7, 3);
+
+    let row1 = row_text(&buf, 1); // first content row
+    assert!(
+        row1.contains("Line3"),
+        "First visible line should be 'Line3' when scrolled, got: '{row1}'"
+    );
+
+    let row2 = row_text(&buf, 2);
+    assert!(
+        row2.contains("Line4"),
+        "Second visible line should be 'Line4' when scrolled, got: '{row2}'"
+    );
+}
+
+#[test]
+fn test_gutter_with_scroll_offset_integration() {
+    let backend = TestBackend::new(30, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let gutter = LineNumberGutter::new()
+                .total_lines(20)
+                .current_line(7)
+                .scroll_offset(5);
+            frame.render_widget(gutter, area);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+
+    // With scroll_offset=5, first row shows line 6
+    let row0 = row_text(buf, 0);
+    assert!(
+        row0.contains('6'),
+        "First gutter row with offset=5 should show '6', got: '{row0}'"
+    );
+
+    // Row 2 (line_index=7) is the current line
+    let row2 = row_text(buf, 2);
+    assert!(
+        row2.contains('8'),
+        "Gutter row 2 with offset=5 should show '8', got: '{row2}'"
+    );
+    // Current line (index 7) should be highlighted
+    assert_eq!(buf.cell((0, 2)).unwrap().fg, Color::Yellow);
+}
+
+#[test]
+fn test_viewport_ensure_cursor_visible_during_editing() {
+    let mut editor = Editor::new();
+    editor.viewport.visible_lines = 5;
+
+    // Type 10 lines
+    for i in 0..10 {
+        for ch in format!("Line{i}").chars() {
+            editor.insert_char(ch).unwrap();
+        }
+        editor.newline().unwrap();
+    }
+
+    // After typing 10 lines, cursor is on line 10
+    // Viewport should have scrolled to keep cursor visible
+    assert_eq!(editor.cursor.line, 10);
+    assert!(
+        editor.viewport.is_line_visible(editor.cursor.line),
+        "Cursor line {} should be visible (scroll_offset={}, visible_lines={})",
+        editor.cursor.line,
+        editor.viewport.scroll_offset,
+        editor.viewport.visible_lines,
     );
 }
