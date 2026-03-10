@@ -17,6 +17,13 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::cli::{parse_file_arg, CliArgs};
 
+#[derive(Clone, Copy)]
+enum ZoomAction {
+    In,
+    Out,
+    Reset,
+}
+
 /// Returns true if the platform command key is pressed (Cmd on macOS, Ctrl elsewhere).
 fn is_cmd_pressed(modifiers: &ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
@@ -116,6 +123,24 @@ impl App {
                 self.editor.viewport.visible_lines = content_height;
             }
         }
+    }
+
+    fn handle_zoom(&mut self, action: ZoomAction) {
+        if let Some(terminal) = self.terminal.as_mut() {
+            match action {
+                ZoomAction::In => terminal.backend_mut().zoom_in(),
+                ZoomAction::Out => terminal.backend_mut().zoom_out(),
+                ZoomAction::Reset => terminal.backend_mut().zoom_reset(),
+            }
+            // INVARIANT: terminal.clear() MUST be called after zoom change.
+            // set_zoom() calls resize() internally which recreates the pixel buffer
+            // as all zeros — same issue as window resize (see Resized handler).
+            if let Err(e) = terminal.clear() {
+                log::error!("Failed to clear terminal after zoom: {e}");
+            }
+        }
+        self.update_viewport_size();
+        self.render();
     }
 
     fn render(&mut self) {
@@ -580,29 +605,17 @@ impl ApplicationHandler for App {
                             }
                             // Cmd+= or Cmd++ to zoom in
                             "=" | "+" => {
-                                if let Some(terminal) = self.terminal.as_mut() {
-                                    terminal.backend_mut().zoom_in();
-                                    self.update_viewport_size();
-                                }
-                                self.render();
+                                self.handle_zoom(ZoomAction::In);
                                 return;
                             }
                             // Cmd+- to zoom out
                             "-" => {
-                                if let Some(terminal) = self.terminal.as_mut() {
-                                    terminal.backend_mut().zoom_out();
-                                    self.update_viewport_size();
-                                }
-                                self.render();
+                                self.handle_zoom(ZoomAction::Out);
                                 return;
                             }
                             // Cmd+0 to reset zoom
                             "0" => {
-                                if let Some(terminal) = self.terminal.as_mut() {
-                                    terminal.backend_mut().zoom_reset();
-                                    self.update_viewport_size();
-                                }
-                                self.render();
+                                self.handle_zoom(ZoomAction::Reset);
                                 return;
                             }
                             _ => {}

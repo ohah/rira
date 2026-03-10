@@ -11,6 +11,7 @@ use cosmic_text::{
 use ratatui::backend::{ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
+use unicode_width::UnicodeWidthStr;
 use winit::window::Window;
 
 /// Default font size in pixels
@@ -721,6 +722,35 @@ impl WgpuBackend {
 
     /// Render a single cell at grid position (col, row) into the pixel buffer.
     /// The cell is offset by the title bar height so ratatui content starts below it.
+    /// Fill only the background of a cell at the given grid position.
+    ///
+    /// Used to propagate background color to continuation cells of wide
+    /// characters (e.g. Korean/CJK), which ratatui resets to default style.
+    fn fill_cell_background(&mut self, col: u16, row: u16, bg: ratatui::style::Color) {
+        let px_x = (col as f32 * self.font.cell_width) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
+        let cw = self.font.cell_width.ceil() as u32;
+        let ch = self.font.cell_height.ceil() as u32;
+
+        let (bg_r, bg_g, bg_b) = color_to_rgb(bg, false);
+
+        for dy in 0..ch {
+            for dx in 0..cw {
+                let x = px_x + dx;
+                let y = px_y + dy;
+                if x < self.buf_width && y < self.buf_height {
+                    let idx = ((y * self.buf_width + x) * 4) as usize;
+                    if idx + 3 < self.pixel_buffer.len() {
+                        self.pixel_buffer[idx] = bg_r;
+                        self.pixel_buffer[idx + 1] = bg_g;
+                        self.pixel_buffer[idx + 2] = bg_b;
+                        self.pixel_buffer[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
     fn render_cell(&mut self, col: u16, row: u16, cell: &Cell) {
         let px_x = (col as f32 * self.font.cell_width) as u32;
         let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
@@ -887,6 +917,18 @@ impl ratatui::backend::Backend for WgpuBackend {
     {
         for (x, y, cell) in content {
             self.render_cell(x, y, cell);
+
+            // Wide characters (Korean/CJK) occupy 2+ cells but ratatui resets
+            // the continuation cells to default style, losing the background
+            // color. Propagate the background to continuation cells so that
+            // selection highlights appear as a continuous block.
+            let symbol = cell.symbol();
+            if !symbol.is_empty() && symbol != " " {
+                let char_width = UnicodeWidthStr::width(symbol);
+                for dx in 1..char_width as u16 {
+                    self.fill_cell_background(x + dx, y, cell.bg);
+                }
+            }
         }
 
         // Draw cursor if visible
@@ -1180,6 +1222,9 @@ mod tests {
         cleared: bool,
         /// Count of cells written via draw() in the most recent call
         cells_drawn: usize,
+        /// Track background color per cell for testing wide char bg propagation.
+        /// Indexed as [row * cols + col].
+        cell_bg: Vec<Color>,
     }
 
     impl PixelBufferBackend {
@@ -1197,6 +1242,7 @@ mod tests {
                 cursor_pos: Position { x: 0, y: 0 },
                 cleared: false,
                 cells_drawn: 0,
+                cell_bg: vec![Color::Reset; (cols as usize) * (rows as usize)],
             }
         }
 
@@ -1210,6 +1256,7 @@ mod tests {
             self.buf_height = rows as u32 * 20;
             // Recreate pixel buffer — all zeros, previous content is lost
             self.pixel_buffer = vec![0u8; (self.buf_width * self.buf_height * 4) as usize];
+            self.cell_bg = vec![Color::Reset; (cols as usize) * (rows as usize)];
         }
 
         /// Check if the pixel buffer is entirely zeroed (blank screen).
@@ -1223,6 +1270,22 @@ mod tests {
         }
     }
 
+    impl PixelBufferBackend {
+        /// Record the background color of a cell (for test assertions).
+        fn set_cell_bg(&mut self, col: u16, row: u16, bg: Color) {
+            let idx = row as usize * self.cols as usize + col as usize;
+            if idx < self.cell_bg.len() {
+                self.cell_bg[idx] = bg;
+            }
+        }
+
+        /// Read the background color of a cell at grid position.
+        fn get_cell_bg(&self, col: u16, row: u16) -> Color {
+            let idx = row as usize * self.cols as usize + col as usize;
+            self.cell_bg.get(idx).copied().unwrap_or(Color::Reset)
+        }
+    }
+
     impl ratatui::backend::Backend for PixelBufferBackend {
         type Error = io::Error;
 
@@ -1233,9 +1296,11 @@ mod tests {
             self.cells_drawn = 0;
             for (x, y, cell) in content {
                 self.cells_drawn += 1;
+
+                // Record background color for this cell
+                self.set_cell_bg(x, y, cell.bg);
+
                 // Write non-zero pixel data for each cell to simulate rendering.
-                // We fill the cell's pixel region with the foreground color so we
-                // can later verify the pixel buffer is not blank.
                 let (r, g, b) = color_to_rgb(cell.fg, true);
                 let px_x = x as u32 * 10;
                 let px_y = y as u32 * 20;
@@ -1252,6 +1317,16 @@ mod tests {
                                 self.pixel_buffer[idx + 3] = 255;
                             }
                         }
+                    }
+                }
+
+                // Wide character continuation cell background propagation
+                // (mirrors WgpuBackend::draw logic)
+                let symbol = cell.symbol();
+                if !symbol.is_empty() && symbol != " " {
+                    let char_width = UnicodeWidthStr::width(symbol);
+                    for dx in 1..char_width as u16 {
+                        self.set_cell_bg(x + dx, y, cell.bg);
                     }
                 }
             }
@@ -1538,5 +1613,163 @@ mod tests {
 
         assert!((font_initial.cell_width - font_reset.cell_width).abs() < f32::EPSILON);
         assert!((font_initial.cell_height - font_reset.cell_height).abs() < f32::EPSILON);
+    }
+
+    // ── Wide character (CJK) selection background tests ──
+    //
+    // ratatui resets continuation cells of wide characters (Korean, CJK)
+    // to default style via Cell::reset(). This causes selection highlights
+    // to appear as individual blocks per character instead of a continuous
+    // bar. The fix propagates the parent cell's background color to
+    // continuation cells during draw().
+
+    use ratatui::text::{Line, Span};
+    use unicode_width::UnicodeWidthStr;
+
+    /// Helper: render a Line with spans to the test backend and return
+    /// the terminal so tests can inspect the pixel buffer.
+    fn render_line_to_backend(
+        cols: u16,
+        rows: u16,
+        line: Line<'_>,
+    ) -> Terminal<PixelBufferBackend> {
+        let backend = PixelBufferBackend::new(cols, rows);
+        let mut terminal = Terminal::new(backend).expect("terminal creation should succeed");
+        terminal.clear().expect("clear should succeed");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let paragraph = Paragraph::new(line);
+                frame.render_widget(paragraph, area);
+            })
+            .expect("draw should succeed");
+        terminal
+    }
+
+    #[test]
+    fn test_wide_char_continuation_cell_gets_selection_bg() {
+        // Render a Korean character "한" with blue selection background.
+        // "한" is a wide character (width=2), so it occupies cells 0 and 1.
+        // Cell 1 is a continuation cell that ratatui resets to default.
+        // Our fix should propagate the blue background to cell 1.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("한", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Cell 0: the wide character itself — should have blue bg
+        assert_eq!(
+            terminal.backend().get_cell_bg(0, 0),
+            Color::Blue,
+            "cell 0 (wide char) should have selection bg"
+        );
+
+        // Cell 1: continuation cell — must also have blue bg (the fix)
+        assert_eq!(
+            terminal.backend().get_cell_bg(1, 0),
+            Color::Blue,
+            "cell 1 (continuation) should have selection bg"
+        );
+    }
+
+    #[test]
+    fn test_multiple_wide_chars_continuous_selection_bg() {
+        // "한글" = two wide characters, occupying cells 0-1 and 2-3.
+        // All four cells should have blue background for continuous selection.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("한글", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..4u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "cell {col} should have selection bg for continuous highlight"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wide_char_per_char_spans_continuous_selection() {
+        // Simulate the cursor-line rendering path where each character
+        // gets its own Span. Both continuation cells should still have
+        // the selection background.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(vec![
+            Span::styled("한", selection_style),
+            Span::styled("글", selection_style),
+        ]);
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..4u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "cell {col} (per-char spans) should have selection bg"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_ascii_and_wide_char_selection() {
+        // "aB한c" where "B한" is selected (blue bg).
+        // Layout: a(0) B(1) 한(2,3) c(4)
+        // Cells 1-3 should have blue bg, cells 0 and 4 should have default bg.
+        let default_style = Style::default().fg(Color::White);
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+
+        let line = Line::from(vec![
+            Span::styled("a", default_style),
+            Span::styled("B한", selection_style),
+            Span::styled("c", default_style),
+        ]);
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Cell 0: 'a' — default bg
+        assert_eq!(terminal.backend().get_cell_bg(0, 0), Color::Reset);
+        // Cell 1: 'B' — selection bg
+        assert_eq!(terminal.backend().get_cell_bg(1, 0), Color::Blue);
+        // Cell 2: '한' — selection bg
+        assert_eq!(terminal.backend().get_cell_bg(2, 0), Color::Blue);
+        // Cell 3: continuation of '한' — selection bg (the fix)
+        assert_eq!(
+            terminal.backend().get_cell_bg(3, 0),
+            Color::Blue,
+            "continuation cell of '한' in mixed text should have selection bg"
+        );
+        // Cell 4: 'c' — default bg
+        assert_eq!(terminal.backend().get_cell_bg(4, 0), Color::Reset);
+    }
+
+    #[test]
+    fn test_ascii_selection_unaffected() {
+        // Pure ASCII selection should work as before — no continuation cells.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("abc", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..3u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "ASCII cell {col} should have selection bg"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wide_char_no_selection_default_bg() {
+        // Wide character without selection should have default background.
+        let line = Line::from(Span::styled("한", Style::default().fg(Color::White)));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Both cells (character + continuation) should have default bg
+        assert_eq!(terminal.backend().get_cell_bg(0, 0), Color::Reset);
+        assert_eq!(terminal.backend().get_cell_bg(1, 0), Color::Reset);
     }
 }
