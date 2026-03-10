@@ -89,6 +89,14 @@ struct GpuState {
     surface_config: wgpu::SurfaceConfiguration,
 }
 
+/// Immutable GPU pipeline resources created once at startup.
+/// Shader compilation and pipeline creation are expensive — do them only once.
+struct BlitPipeline {
+    render_pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
 /// Font rendering state using cosmic-text.
 struct FontState {
     font_system: FontSystem,
@@ -121,12 +129,12 @@ pub struct WgpuBackend {
     /// Buffer dimensions in pixels
     buf_width: u32,
     buf_height: u32,
-    /// wgpu texture for uploading the pixel buffer
+    /// wgpu texture for uploading the pixel buffer (recreated on resize)
     texture: wgpu::Texture,
-    /// Bind group for the fullscreen blit
+    /// Bind group for the fullscreen blit (recreated on resize)
     bind_group: wgpu::BindGroup,
-    /// Render pipeline for fullscreen blit
-    render_pipeline: wgpu::RenderPipeline,
+    /// Immutable blit pipeline resources (created once, never recreated)
+    blit: BlitPipeline,
     /// Title bar height in physical pixels (accounts for scale factor)
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
@@ -160,8 +168,9 @@ impl WgpuBackend {
         let buf_height = size.height.max(1);
         let pixel_buffer = vec![0u8; (buf_width * buf_height * 4) as usize];
 
-        let (texture, bind_group, render_pipeline) =
-            Self::create_blit_resources(&gpu.device, buf_width, buf_height, &gpu.surface_config);
+        let blit = Self::create_blit_pipeline(&gpu.device, &gpu.surface_config);
+        let (texture, bind_group) =
+            Self::create_texture_and_bind_group(&gpu.device, &blit, buf_width, buf_height);
 
         Ok(Self {
             window,
@@ -177,7 +186,7 @@ impl WgpuBackend {
             buf_height,
             texture,
             bind_group,
-            render_pipeline,
+            blit,
             title_bar_height_px,
             title: String::from("rira"),
             zoom_level,
@@ -268,29 +277,12 @@ impl WgpuBackend {
         (cell_width, scaled_line_height)
     }
 
-    fn create_blit_resources(
+    /// Create the immutable blit pipeline (shader, pipeline, layout, sampler).
+    /// Called once at startup. These resources never change.
+    fn create_blit_pipeline(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
         surface_config: &wgpu::SurfaceConfiguration,
-    ) -> (wgpu::Texture, wgpu::BindGroup, wgpu::RenderPipeline) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rira-cell-texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
+    ) -> BlitPipeline {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rira-sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -316,21 +308,6 @@ impl WgpuBackend {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
-                },
-            ],
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rira-blit-bg"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
         });
@@ -375,7 +352,54 @@ impl WgpuBackend {
             cache: None,
         });
 
-        (texture, bind_group, render_pipeline)
+        BlitPipeline {
+            render_pipeline,
+            bind_group_layout,
+            sampler,
+        }
+    }
+
+    /// Create only the size-dependent resources: texture + bind group.
+    /// Called on every resize. Reuses the immutable pipeline/sampler/layout.
+    fn create_texture_and_bind_group(
+        device: &wgpu::Device,
+        blit: &BlitPipeline,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::BindGroup) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rira-cell-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rira-blit-bg"),
+            layout: &blit.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&blit.sampler),
+                },
+            ],
+        });
+
+        (texture, bind_group)
     }
 
     /// Handle a window resize event.
@@ -405,7 +429,7 @@ impl WgpuBackend {
 
         let required = (width * height * 4) as usize;
         if size_changed {
-            // Only reallocate pixel buffer and GPU resources when dimensions actually change.
+            // Only reallocate pixel buffer and GPU texture when dimensions actually change.
             // Zoom changes font metrics but not window size, so this skips the expensive path.
             if self.pixel_buffer.len() != required {
                 self.pixel_buffer = vec![0u8; required];
@@ -413,15 +437,12 @@ impl WgpuBackend {
                 self.pixel_buffer.fill(0);
             }
 
-            let (texture, bind_group, render_pipeline) = Self::create_blit_resources(
-                &self.gpu.device,
-                width,
-                height,
-                &self.gpu.surface_config,
-            );
+            // Only recreate texture + bind group (lightweight).
+            // Pipeline/shader/sampler/layout are reused from self.blit.
+            let (texture, bind_group) =
+                Self::create_texture_and_bind_group(&self.gpu.device, &self.blit, width, height);
             self.texture = texture;
             self.bind_group = bind_group;
-            self.render_pipeline = render_pipeline;
         } else {
             // Same size — just zero out the pixel buffer
             self.pixel_buffer.fill(0);
@@ -512,7 +533,7 @@ impl WgpuBackend {
                 depth_stencil_attachment: None,
                 ..Default::default()
             });
-            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_pipeline(&self.blit.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
