@@ -16,19 +16,17 @@ gh pr create --title "<concise title>" --label "<labels>" --assignee "ohah" --bo
 ## Summary
 <1-3 bullet points describing what changed and why>
 
-## Changes
-<detailed list of changes per crate/file>
-
-## Test Plan
-- [ ] `cargo test --workspace --exclude rira-app --exclude rira-renderer` passes
+## Test plan
+- [ ] `cargo test --workspace --exclude rira --exclude rira-renderer` passes
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [ ] `cargo fmt --all -- --check` passes
 - [ ] <specific test instructions for this PR>
 
-## How to Verify
-```bash
-<commands to build/run/test the changes>
-```
+## Affected crates
+<list affected crates with brief description of what changed in each>
+
+## Screenshots
+<if UI changes, add before/after screenshots. Otherwise write "N/A">
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
