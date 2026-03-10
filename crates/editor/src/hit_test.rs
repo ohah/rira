@@ -1,5 +1,7 @@
 //! Hit testing: convert screen coordinates to buffer positions.
 
+use unicode_width::UnicodeWidthChar;
+
 use crate::buffer::Buffer;
 
 /// Result of a hit test - converting screen coordinates to buffer position.
@@ -32,6 +34,10 @@ impl HitTestConfig {
     /// The coordinates `x` and `y` are in logical pixels relative to the
     /// window's content area origin (top-left of the window).
     /// The result is clamped to valid buffer bounds.
+    ///
+    /// For wide characters (Korean/CJK, 2 cell width), the cell column
+    /// is mapped to the correct character index by walking the line's
+    /// characters and accumulating their display widths.
     #[must_use]
     pub fn hit_test(&self, x: f64, y: f64, buffer: &Buffer) -> HitTestResult {
         let line_count = buffer.line_count();
@@ -55,22 +61,45 @@ impl HitTestConfig {
             buffer_line.min(line_count - 1)
         };
 
-        // Calculate col from x position relative to content area
+        // Calculate cell column from x position
         let relative_x = x - self.content_x;
-        let col = if relative_x < 0.0 || self.cell_width <= 0.0 {
-            0
+        let cell_col = if relative_x < 0.0 || self.cell_width <= 0.0 {
+            0.0
         } else {
-            // Use .round() so clicking the left half of a cell places cursor before it,
-            // and clicking the right half places cursor after it.
-            (relative_x / self.cell_width).round() as usize
+            relative_x / self.cell_width
         };
 
-        // Clamp col to the content length of the line (excluding trailing newline)
-        let max_col = buffer.line_content_len(line);
-        let col = col.min(max_col);
+        // Convert cell column to character index by walking the line's
+        // characters and accumulating their display widths.
+        // Wide characters (Korean/CJK) occupy 2 cells, ASCII occupies 1.
+        let col = if let Some(line_text) = buffer.line(line) {
+            let text = line_text.trim_end_matches('\n');
+            cell_col_to_char_index(text, cell_col)
+        } else {
+            0
+        };
 
         HitTestResult { line, col }
     }
+}
+
+/// Convert a fractional cell column to a character index, accounting for
+/// wide characters (Korean/CJK = 2 cells, ASCII = 1 cell).
+///
+/// Uses rounding: clicking the first half of a character's cells places the
+/// cursor before it, clicking the second half places cursor after it.
+fn cell_col_to_char_index(text: &str, cell_col: f64) -> usize {
+    let mut accumulated_cells: usize = 0;
+    for (char_idx, ch) in text.chars().enumerate() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        let mid = accumulated_cells as f64 + char_width as f64 / 2.0;
+        if cell_col < mid {
+            return char_idx;
+        }
+        accumulated_cells += char_width;
+    }
+    // Past end of line: return character count
+    text.chars().count()
 }
 
 #[cfg(test)]
@@ -213,5 +242,127 @@ mod tests {
         // Rounds to col 2
         let result = config.hit_test(33.0, 20.0, &buf);
         assert_eq!(result, HitTestResult { line: 0, col: 2 });
+    }
+
+    // ── Wide character (Korean/CJK) hit test tests ──
+
+    #[test]
+    fn test_click_wide_char_first_cell() {
+        // "한글" — '한' occupies cells 0-1, '글' occupies cells 2-3
+        let buf = Buffer::from_text("한글");
+        let config = default_config();
+        // Click at cell 0 (left half of '한') -> char index 0
+        let result = config.hit_test(10.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 0 });
+    }
+
+    #[test]
+    fn test_click_wide_char_second_cell() {
+        // "한글" — '한' occupies cells 0-1, '글' occupies cells 2-3
+        let buf = Buffer::from_text("한글");
+        let config = default_config();
+        // Click at cell 1.5 (right half of '한') -> char index 1 (after '한')
+        // x = content_x + 1.5 * cell_width = 10 + 15 = 25
+        let result = config.hit_test(25.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 1 });
+    }
+
+    #[test]
+    fn test_click_second_wide_char() {
+        // "한글" — '한' occupies cells 0-1, '글' occupies cells 2-3
+        let buf = Buffer::from_text("한글");
+        let config = default_config();
+        // Click at cell 2.5 (left half of '글') -> char index 1
+        // x = content_x + 2.5 * cell_width = 10 + 25 = 35
+        let result = config.hit_test(35.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 1 });
+    }
+
+    #[test]
+    fn test_click_after_second_wide_char() {
+        // "한글" — '한' occupies cells 0-1, '글' occupies cells 2-3
+        let buf = Buffer::from_text("한글");
+        let config = default_config();
+        // Click at cell 3.5 (right half of '글') -> char index 2 (after '글')
+        // x = content_x + 3.5 * cell_width = 10 + 35 = 45
+        let result = config.hit_test(45.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+    }
+
+    #[test]
+    fn test_click_past_wide_chars() {
+        let buf = Buffer::from_text("한글");
+        let config = default_config();
+        // Click far right -> clamp to end (2 chars)
+        let result = config.hit_test(500.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+    }
+
+    #[test]
+    fn test_click_mixed_ascii_and_wide() {
+        // "a한b" — 'a' at cell 0, '한' at cells 1-2, 'b' at cell 3
+        let buf = Buffer::from_text("a한b");
+        let config = default_config();
+
+        // Click cell 0 (left half of 'a') -> col 0
+        let result = config.hit_test(10.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 0 });
+
+        // Click cell 1 (left half of '한') -> col 1
+        // x = content_x + 1.0 * cell_width = 10 + 10 = 20
+        let result = config.hit_test(20.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 1 });
+
+        // Click cell 2.5 (right half of '한') -> col 2 (after '한')
+        // x = content_x + 2.5 * cell_width = 10 + 25 = 35
+        let result = config.hit_test(35.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+
+        // Click cell 3 ('b') -> col 2
+        // x = content_x + 3.0 * cell_width = 10 + 30 = 40
+        let result = config.hit_test(40.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+
+        // Click cell 3.6 (right half of 'b') -> col 3
+        // x = content_x + 3.6 * cell_width = 10 + 36 = 46
+        let result = config.hit_test(46.0, 20.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 3 });
+    }
+
+    #[test]
+    fn test_cell_col_to_char_index_ascii() {
+        // Pure ASCII: each char = 1 cell
+        assert_eq!(cell_col_to_char_index("hello", 0.0), 0);
+        assert_eq!(cell_col_to_char_index("hello", 0.6), 1);
+        assert_eq!(cell_col_to_char_index("hello", 2.5), 3);
+        assert_eq!(cell_col_to_char_index("hello", 10.0), 5);
+    }
+
+    #[test]
+    fn test_cell_col_to_char_index_wide() {
+        // "한글": '한'=cells 0-1, '글'=cells 2-3
+        assert_eq!(cell_col_to_char_index("한글", 0.0), 0); // before '한'
+        assert_eq!(cell_col_to_char_index("한글", 0.9), 0); // left half of '한'
+        assert_eq!(cell_col_to_char_index("한글", 1.1), 1); // right half of '한'
+        assert_eq!(cell_col_to_char_index("한글", 2.0), 1); // start of '글'
+        assert_eq!(cell_col_to_char_index("한글", 3.1), 2); // right half of '글'
+        assert_eq!(cell_col_to_char_index("한글", 5.0), 2); // past end
+    }
+
+    #[test]
+    fn test_cell_col_to_char_index_mixed() {
+        // "a한b": 'a'=cell 0, '한'=cells 1-2, 'b'=cell 3
+        assert_eq!(cell_col_to_char_index("a한b", 0.0), 0); // before 'a'
+        assert_eq!(cell_col_to_char_index("a한b", 0.6), 1); // after 'a'
+        assert_eq!(cell_col_to_char_index("a한b", 1.5), 1); // left half of '한'
+        assert_eq!(cell_col_to_char_index("a한b", 2.1), 2); // right half of '한'
+        assert_eq!(cell_col_to_char_index("a한b", 3.0), 2); // before 'b'
+        assert_eq!(cell_col_to_char_index("a한b", 3.6), 3); // after 'b'
+    }
+
+    #[test]
+    fn test_cell_col_to_char_index_empty() {
+        assert_eq!(cell_col_to_char_index("", 0.0), 0);
+        assert_eq!(cell_col_to_char_index("", 5.0), 0);
     }
 }

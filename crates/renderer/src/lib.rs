@@ -751,7 +751,8 @@ impl WgpuBackend {
         }
     }
 
-    fn render_cell(&mut self, col: u16, row: u16, cell: &Cell) {
+    /// Render only the background of a cell at grid position (col, row).
+    fn render_cell_bg(&mut self, col: u16, row: u16, cell: &Cell) {
         let px_x = (col as f32 * self.font.cell_width) as u32;
         let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
         let cw = self.font.cell_width.ceil() as u32;
@@ -759,7 +760,6 @@ impl WgpuBackend {
 
         let (bg_r, bg_g, bg_b) = color_to_rgb(cell.bg, false);
 
-        // Fill background
         for dy in 0..ch {
             for dx in 0..cw {
                 let x = px_x + dx;
@@ -775,6 +775,12 @@ impl WgpuBackend {
                 }
             }
         }
+    }
+
+    /// Render only the glyph of a cell at grid position (col, row).
+    fn render_cell_glyph(&mut self, col: u16, row: u16, cell: &Cell) {
+        let px_x = (col as f32 * self.font.cell_width) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
 
         // Render glyph
         let sym = cell.symbol();
@@ -784,7 +790,7 @@ impl WgpuBackend {
 
         let (fg_r, fg_g, fg_b) = color_to_rgb(cell.fg, true);
 
-        let scale = self.scale_factor as f32;
+        let scale = self.scale_factor as f32 * self.zoom_level;
         let metrics = Metrics::new(DEFAULT_FONT_SIZE * scale, DEFAULT_LINE_HEIGHT * scale);
         let mut buf = CosmicBuffer::new(&mut self.font.font_system, metrics);
         buf.set_text(
@@ -915,20 +921,30 @@ impl ratatui::backend::Backend for WgpuBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        for (x, y, cell) in content {
-            self.render_cell(x, y, cell);
+        // Two-pass rendering: backgrounds first, then glyphs.
+        // This prevents continuation cell backgrounds from overwriting
+        // the right half of wide character (Korean/CJK) glyphs.
+        let cells: Vec<(u16, u16, Cell)> = content.map(|(x, y, c)| (x, y, c.clone())).collect();
 
-            // Wide characters (Korean/CJK) occupy 2+ cells but ratatui resets
-            // the continuation cells to default style, losing the background
-            // color. Propagate the background to continuation cells so that
-            // selection highlights appear as a continuous block.
+        // Pass 1: Fill all backgrounds (including wide char continuation cells)
+        for (x, y, cell) in &cells {
+            self.render_cell_bg(*x, *y, cell);
+
+            // Wide characters occupy 2+ cells but ratatui resets
+            // continuation cells to default style. Propagate the
+            // background so selection highlights are continuous.
             let symbol = cell.symbol();
             if !symbol.is_empty() && symbol != " " {
                 let char_width = UnicodeWidthStr::width(symbol);
                 for dx in 1..char_width as u16 {
-                    self.fill_cell_background(x + dx, y, cell.bg);
+                    self.fill_cell_background(x + dx, *y, cell.bg);
                 }
             }
+        }
+
+        // Pass 2: Render all glyphs on top of backgrounds
+        for (x, y, cell) in &cells {
+            self.render_cell_glyph(*x, *y, cell);
         }
 
         // Draw cursor if visible
