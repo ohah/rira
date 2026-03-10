@@ -30,7 +30,7 @@ fn is_cmd_pressed(modifiers: &ModifiersState) -> bool {
 struct App {
     window: Option<Arc<Window>>,
     terminal: Option<Terminal<WgpuBackend>>,
-    /// Current cursor position in physical pixels for title bar hit testing
+    /// Current mouse cursor position in physical pixels (from winit CursorMoved)
     cursor_position: (f64, f64),
     /// The text editor state.
     editor: Editor,
@@ -697,17 +697,19 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                // winit 0.30: CursorMoved gives PhysicalPosition<f64> (physical pixels)
                 self.cursor_position = (position.x, position.y);
 
                 // Handle drag selection
                 if self.mouse_dragging {
                     if let Some(terminal) = self.terminal.as_ref() {
                         let backend = terminal.backend();
-                        let scale_factor = backend.window().scale_factor();
-                        let cell_width = backend.cell_width() as f64 / scale_factor;
-                        let cell_height = backend.cell_height() as f64 / scale_factor;
-                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
+                        let cell_width = backend.cell_width() as f64;
+                        let cell_height = backend.cell_height() as f64;
+                        let title_bar_height = backend.title_bar_height_px() as f64;
 
+                        // All coordinates in physical pixels:
+                        // content starts after left border (1 cell) and title bar + top border (1 cell)
                         let config = HitTestConfig {
                             cell_width,
                             line_height: cell_height,
@@ -745,10 +747,9 @@ impl ApplicationHandler for App {
             } => {
                 if let Some(terminal) = self.terminal.as_ref() {
                     let backend = terminal.backend();
-                    let scale_factor = backend.window().scale_factor();
-                    let physical_y = self.cursor_position.1 * scale_factor;
 
-                    if backend.is_in_title_bar(0.0, physical_y as f32) {
+                    // cursor_position is already in physical pixels (winit 0.30)
+                    if backend.is_in_title_bar(0.0, self.cursor_position.1 as f32) {
                         // Click is in the title bar area, initiate window drag
                         if let Some(window) = &self.window {
                             if let Err(e) = window.drag_window() {
@@ -757,11 +758,11 @@ impl ApplicationHandler for App {
                         }
                     } else {
                         // Click is in the content area, move cursor
-                        let cell_width = backend.cell_width() as f64 / scale_factor;
-                        let cell_height = backend.cell_height() as f64 / scale_factor;
-                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
+                        // All values in physical pixels — no scale_factor conversion needed
+                        let cell_width = backend.cell_width() as f64;
+                        let cell_height = backend.cell_height() as f64;
+                        let title_bar_height = backend.title_bar_height_px() as f64;
 
-                        // Content starts after title bar + 1 cell border (ratatui Block)
                         let content_x = cell_width; // 1 cell for left border
                         let content_y = title_bar_height + cell_height; // title bar + 1 cell for top border
 
