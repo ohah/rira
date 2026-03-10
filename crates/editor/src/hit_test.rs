@@ -14,15 +14,20 @@ pub struct HitTestResult {
 }
 
 /// Configuration for hit testing.
+///
+/// All pixel values must use the same coordinate space (physical pixels).
+/// winit's `CursorMoved` provides `PhysicalPosition`, and the renderer's
+/// `cell_width()` / `cell_height()` / `title_bar_height_px()` return physical
+/// pixels — pass them directly without dividing by `scale_factor`.
 #[derive(Debug, Clone, Copy)]
 pub struct HitTestConfig {
-    /// Width of each character cell in logical pixels.
+    /// Width of each character cell in pixels.
     pub cell_width: f64,
-    /// Height of each line in logical pixels.
+    /// Height of each line in pixels.
     pub line_height: f64,
-    /// X offset where content starts (after border + gutter) in logical pixels.
+    /// X offset where content starts (after border + gutter) in pixels.
     pub content_x: f64,
-    /// Y offset where content starts (after border/title) in logical pixels.
+    /// Y offset where content starts (after border/title) in pixels.
     pub content_y: f64,
     /// Current scroll offset (first visible line).
     pub scroll_offset: usize,
@@ -31,9 +36,9 @@ pub struct HitTestConfig {
 impl HitTestConfig {
     /// Convert screen coordinates to buffer line/col position.
     ///
-    /// The coordinates `x` and `y` are in logical pixels relative to the
-    /// window's content area origin (top-left of the window).
-    /// The result is clamped to valid buffer bounds.
+    /// The coordinates `x` and `y` must be in the same pixel space as the
+    /// config fields (physical pixels). The result is clamped to valid buffer
+    /// bounds.
     ///
     /// For wide characters (Korean/CJK, 2 cell width), the cell column
     /// is mapped to the correct character index by walking the line's
@@ -364,5 +369,229 @@ mod tests {
     fn test_cell_col_to_char_index_empty() {
         assert_eq!(cell_col_to_char_index("", 0.0), 0);
         assert_eq!(cell_col_to_char_index("", 5.0), 0);
+    }
+
+    // ── Physical pixel coordinate tests ──
+    //
+    // These simulate real-world scenarios where all values are in physical
+    // pixels (winit CursorMoved + WgpuBackend cell/title_bar dimensions).
+    // Verifies the fix for the physical-vs-logical pixel mismatch bug.
+
+    /// Simulate Retina display (2x): physical cell_width = 19.2, line_height = 40.0
+    fn retina_config() -> HitTestConfig {
+        let scale = 2.0;
+        let cell_width = 9.6 * scale; // 19.2 physical pixels
+        let line_height = 20.0 * scale; // 40.0 physical pixels
+        let title_bar_height = 38.0 * scale; // 76.0 physical pixels
+        HitTestConfig {
+            cell_width,
+            line_height,
+            content_x: cell_width,                   // 1 cell left border
+            content_y: title_bar_height + line_height, // title bar + 1 cell top border
+            scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn test_retina_click_first_char() {
+        let buf = Buffer::from_text("hello");
+        let config = retina_config();
+        // Click at content origin in physical pixels
+        // x = content_x = 19.2, y = content_y = 116.0
+        let result = config.hit_test(19.2, 116.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 0 });
+    }
+
+    #[test]
+    fn test_retina_click_third_char() {
+        let buf = Buffer::from_text("hello");
+        let config = retina_config();
+        // x = content_x + 3 * cell_width = 19.2 + 57.6 = 76.8
+        let result = config.hit_test(76.8, 116.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 3 });
+    }
+
+    #[test]
+    fn test_retina_click_second_line() {
+        let buf = Buffer::from_text("hello\nworld");
+        let config = retina_config();
+        // y = content_y + 1 * line_height = 116.0 + 40.0 = 156.0
+        // x = content_x + 2 * cell_width = 19.2 + 38.4 = 57.6
+        let result = config.hit_test(57.6, 156.0, &buf);
+        assert_eq!(result, HitTestResult { line: 1, col: 2 });
+    }
+
+    #[test]
+    fn test_retina_click_wide_char() {
+        let buf = Buffer::from_text("한글");
+        let config = retina_config();
+        // '한' = cells 0-1, '글' = cells 2-3 (in physical: 0..38.4, 38.4..76.8)
+        // Click at right half of '한': cell_col 1.5
+        // x = content_x + 1.5 * cell_width = 19.2 + 28.8 = 48.0
+        let result = config.hit_test(48.0, 116.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 1 });
+    }
+
+    /// BUG REGRESSION: if cell_width is divided by scale_factor (logical)
+    /// but cursor_position is physical, column calculation is 2x off.
+    #[test]
+    fn test_physical_logical_mismatch_would_fail() {
+        let buf = Buffer::from_text("hello");
+        let scale = 2.0;
+        let physical_cell_width = 9.6 * scale; // 19.2
+        let physical_line_height = 20.0 * scale; // 40.0
+        let physical_title_bar = 38.0 * scale; // 76.0
+
+        // Correct: all physical
+        let correct_config = HitTestConfig {
+            cell_width: physical_cell_width,
+            line_height: physical_line_height,
+            content_x: physical_cell_width,
+            content_y: physical_title_bar + physical_line_height,
+            scroll_offset: 0,
+        };
+
+        // Bug: mixed logical cell_width with physical cursor position
+        let buggy_config = HitTestConfig {
+            cell_width: physical_cell_width / scale, // 9.6 (logical)
+            line_height: physical_line_height / scale,
+            content_x: physical_cell_width / scale,
+            content_y: (physical_title_bar + physical_line_height) / scale,
+            scroll_offset: 0,
+        };
+
+        // Physical cursor at column 3: x = content_x + 3 * cell_width
+        let physical_x = physical_cell_width + 3.0 * physical_cell_width; // 19.2 + 57.6 = 76.8
+
+        let correct = correct_config.hit_test(physical_x, 116.0, &buf);
+        let buggy = buggy_config.hit_test(physical_x, 116.0, &buf);
+
+        assert_eq!(correct, HitTestResult { line: 0, col: 3 });
+        // Buggy config maps physical x=76.8 with logical cell_width=9.6:
+        // relative_x = 76.8 - 9.6 = 67.2, cell_col = 67.2 / 9.6 = 7.0 → col 5 (clamped)
+        assert_ne!(
+            correct, buggy,
+            "physical/logical mismatch should produce wrong result"
+        );
+    }
+
+    /// Simulate 1x (non-Retina) display
+    fn standard_config() -> HitTestConfig {
+        let cell_width = 9.6;
+        let line_height = 20.0;
+        let title_bar_height = 38.0;
+        HitTestConfig {
+            cell_width,
+            line_height,
+            content_x: cell_width,
+            content_y: title_bar_height + line_height,
+            scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn test_standard_display_click() {
+        let buf = Buffer::from_text("hello");
+        let config = standard_config();
+        // x = content_x + 2 * cell_width = 9.6 + 19.2 = 28.8
+        let result = config.hit_test(28.8, 58.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+    }
+
+    /// Simulate Windows 150% DPI scaling
+    fn windows_150_config() -> HitTestConfig {
+        let scale = 1.5;
+        let cell_width = 9.6 * scale; // 14.4
+        let line_height = 20.0 * scale; // 30.0
+        let title_bar_height = 38.0 * scale; // 57.0
+        HitTestConfig {
+            cell_width,
+            line_height,
+            content_x: cell_width,
+            content_y: title_bar_height + line_height,
+            scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn test_windows_150_dpi_click() {
+        let buf = Buffer::from_text("hello");
+        let config = windows_150_config();
+        // x = content_x + 4 * cell_width = 14.4 + 57.6 = 72.0
+        let result = config.hit_test(72.0, 87.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 4 });
+    }
+
+    #[test]
+    fn test_windows_150_dpi_wide_char() {
+        let buf = Buffer::from_text("a한b");
+        let config = windows_150_config();
+        // 'a'=cell 0, '한'=cells 1-2, 'b'=cell 3
+        // Click right half of '한': cell_col ~2.5
+        // x = content_x + 2.5 * cell_width = 14.4 + 36.0 = 50.4
+        let result = config.hit_test(50.4, 87.0, &buf);
+        assert_eq!(result, HitTestResult { line: 0, col: 2 });
+    }
+
+    /// All scale factors should produce the same logical result for
+    /// equivalent click positions.
+    #[test]
+    fn test_consistent_result_across_scale_factors() {
+        let buf = Buffer::from_text("hello");
+
+        for &scale in &[1.0, 1.25, 1.5, 2.0, 3.0] {
+            let cell_width = 9.6 * scale;
+            let line_height = 20.0 * scale;
+            let title_bar = 38.0 * scale;
+            let config = HitTestConfig {
+                cell_width,
+                line_height,
+                content_x: cell_width,
+                content_y: title_bar + line_height,
+                scroll_offset: 0,
+            };
+
+            // Click at logical column 3 → physical x = content_x + 3 * cell_width
+            let x = cell_width + 3.0 * cell_width;
+            let y = title_bar + line_height; // first content line
+
+            let result = config.hit_test(x, y, &buf);
+            assert_eq!(
+                result,
+                HitTestResult { line: 0, col: 3 },
+                "scale_factor={scale}: expected col 3"
+            );
+        }
+    }
+
+    /// All scale factors with wide chars should produce consistent results.
+    #[test]
+    fn test_consistent_wide_char_across_scale_factors() {
+        let buf = Buffer::from_text("한글테스트");
+
+        for &scale in &[1.0, 1.25, 1.5, 2.0, 3.0] {
+            let cell_width = 9.6 * scale;
+            let line_height = 20.0 * scale;
+            let title_bar = 38.0 * scale;
+            let config = HitTestConfig {
+                cell_width,
+                line_height,
+                content_x: cell_width,
+                content_y: title_bar + line_height,
+                scroll_offset: 0,
+            };
+
+            // '한'=cells 0-1, '글'=cells 2-3, '테'=cells 4-5
+            // Click right half of '글': cell_col ~3.5
+            let x = cell_width + 3.5 * cell_width;
+            let y = title_bar + line_height;
+
+            let result = config.hit_test(x, y, &buf);
+            assert_eq!(
+                result,
+                HitTestResult { line: 0, col: 2 },
+                "scale_factor={scale}: expected col 2 (after '글')"
+            );
+        }
     }
 }
