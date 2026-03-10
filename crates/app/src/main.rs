@@ -706,8 +706,7 @@ impl ApplicationHandler for App {
                         let scale_factor = backend.window().scale_factor();
                         let cell_width = backend.cell_width() as f64 / scale_factor;
                         let cell_height = backend.cell_height() as f64 / scale_factor;
-                        let title_bar_height =
-                            backend.title_bar_height_px() as f64 / scale_factor;
+                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
 
                         let config = HitTestConfig {
                             cell_width,
