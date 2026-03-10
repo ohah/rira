@@ -753,10 +753,11 @@ impl ApplicationHandler for App {
                 if self.mouse_dragging {
                     if let Some(terminal) = self.terminal.as_ref() {
                         let backend = terminal.backend();
-                        let scale_factor = backend.window().scale_factor();
-                        let cell_width = backend.cell_width() as f64 / scale_factor;
-                        let cell_height = backend.cell_height() as f64 / scale_factor;
-                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
+                        // cursor_position is in physical pixels (from winit CursorMoved),
+                        // so use physical pixel dimensions throughout for consistency.
+                        let cell_width = backend.cell_width() as f64;
+                        let cell_height = backend.cell_height() as f64;
+                        let title_bar_height = backend.title_bar_height_px() as f64;
 
                         let config = HitTestConfig {
                             cell_width,
@@ -795,8 +796,9 @@ impl ApplicationHandler for App {
             } => {
                 if let Some(terminal) = self.terminal.as_ref() {
                     let backend = terminal.backend();
-                    let scale_factor = backend.window().scale_factor();
-                    let physical_y = self.cursor_position.1 * scale_factor;
+                    // cursor_position is already in physical pixels (from winit CursorMoved).
+                    // Use physical pixel dimensions throughout for consistency.
+                    let physical_y = self.cursor_position.1;
 
                     if backend.is_in_title_bar(0.0, physical_y as f32) {
                         // Click is in the title bar area, initiate window drag
@@ -807,11 +809,10 @@ impl ApplicationHandler for App {
                         }
                     } else {
                         // Click is in the content area, move cursor
-                        let cell_width = backend.cell_width() as f64 / scale_factor;
-                        let cell_height = backend.cell_height() as f64 / scale_factor;
-                        let title_bar_height = backend.title_bar_height_px() as f64 / scale_factor;
+                        let cell_width = backend.cell_width() as f64;
+                        let cell_height = backend.cell_height() as f64;
+                        let title_bar_height = backend.title_bar_height_px() as f64;
 
-                        // Content starts after title bar + 1 cell border (ratatui Block)
                         let content_x = cell_width; // 1 cell for left border
                         let content_y = title_bar_height + cell_height; // title bar + 1 cell for top border
 
