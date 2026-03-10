@@ -37,6 +37,31 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run
 ```
 
+## 개발/설계 원칙
+
+### 성능 최우선 (Performance First)
+- **제로 불필요 할당**: 매 프레임, 매 이벤트마다 힙 할당을 최소화. `Vec` collect 대신 참조, 재사용 가능한 버퍼는 재할당 없이 `.fill(0)` 또는 `.clear()`
+- **비용이 큰 연산은 캐싱**: `FontSystem::new()` 같은 시스템 리소스 스캔은 최초 1회만. 이후 변경 시 metrics만 재계산
+- **GPU 리소스 재생성 최소화**: 텍스처, 파이프라인, 바인드그룹은 실제 크기가 변할 때만 재생성. 동일 크기면 기존 리소스 재사용
+- **Hot path에서 clone 금지**: `draw()` 같은 매 프레임 호출 경로에서 데이터 복사를 피하고 참조를 사용
+
+### 크레이트 격리 (Crate Isolation)
+- **editor**: 순수 텍스트 로직. UI/렌더러 의존성 없음. `ropey` + `unicode-width`만 사용
+- **renderer**: GPU 렌더링. editor를 직접 의존하지 않음. ratatui Backend trait 구현
+- **app**: 유일한 통합 지점. winit 이벤트 → editor 조작 → ratatui 위젯 → renderer
+- 크레이트 간 의존 방향은 단방향. 순환 의존 금지
+
+### 좌표계 일관성 (Coordinate Consistency)
+- winit 이벤트(`CursorMoved`)는 **물리 픽셀(physical pixels)** 기준
+- WgpuBackend의 `cell_width()`, `cell_height()`도 물리 픽셀 기준
+- hit test 시 `/ scale_factor` 하지 않음. 물리 픽셀끼리 직접 비교
+- 와이드 문자(한글/CJK)는 `unicode-width`로 셀 폭 계산. 단순 `col / cell_width`가 아닌 문자 폭 누적 방식
+
+### Rust 철학
+- 안정성은 Rust 타입 시스템과 borrow checker에 위임
+- `unsafe` 사용 금지 (외부 FFI 바인딩 제외)
+- 에러 처리는 `Result`/`Option` — `unwrap()` 대신 적절한 에러 전파
+
 ## PR 규칙
 
 - PR에는 변경 내용, 테스트 방법, 추가된 기능을 모두 기술할 것
