@@ -399,15 +399,33 @@ impl WgpuBackend {
         self.grid_cols = (width as f32 / self.font.cell_width) as u16;
         self.grid_rows = (content_height as f32 / self.font.cell_height) as u16;
 
+        let size_changed = self.buf_width != width || self.buf_height != height;
         self.buf_width = width;
         self.buf_height = height;
-        self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
 
-        let (texture, bind_group, render_pipeline) =
-            Self::create_blit_resources(&self.gpu.device, width, height, &self.gpu.surface_config);
-        self.texture = texture;
-        self.bind_group = bind_group;
-        self.render_pipeline = render_pipeline;
+        let required = (width * height * 4) as usize;
+        if size_changed {
+            // Only reallocate pixel buffer and GPU resources when dimensions actually change.
+            // Zoom changes font metrics but not window size, so this skips the expensive path.
+            if self.pixel_buffer.len() != required {
+                self.pixel_buffer = vec![0u8; required];
+            } else {
+                self.pixel_buffer.fill(0);
+            }
+
+            let (texture, bind_group, render_pipeline) = Self::create_blit_resources(
+                &self.gpu.device,
+                width,
+                height,
+                &self.gpu.surface_config,
+            );
+            self.texture = texture;
+            self.bind_group = bind_group;
+            self.render_pipeline = render_pipeline;
+        } else {
+            // Same size — just zero out the pixel buffer
+            self.pixel_buffer.fill(0);
+        }
     }
 
     /// Handle a scale factor change (e.g., window moved between displays).
@@ -944,11 +962,13 @@ impl ratatui::backend::Backend for WgpuBackend {
         // Two-pass rendering: backgrounds first, then glyphs.
         // This prevents continuation cell backgrounds from overwriting
         // the right half of wide character (Korean/CJK) glyphs.
-        let cells: Vec<(u16, u16, Cell)> = content.map(|(x, y, c)| (x, y, c.clone())).collect();
+        //
+        // We store references to avoid cloning Cell objects every frame.
+        let cells: Vec<(u16, u16, &Cell)> = content.collect();
 
         // Pass 1: Fill all backgrounds (including wide char continuation cells)
-        for (x, y, cell) in &cells {
-            self.render_cell_bg(*x, *y, cell);
+        for &(x, y, cell) in &cells {
+            self.render_cell_bg(x, y, cell);
 
             // Wide characters occupy 2+ cells but ratatui resets
             // continuation cells to default style. Propagate the
@@ -957,14 +977,14 @@ impl ratatui::backend::Backend for WgpuBackend {
             if !symbol.is_empty() && symbol != " " {
                 let char_width = UnicodeWidthStr::width(symbol);
                 for dx in 1..char_width as u16 {
-                    self.fill_cell_background(x + dx, *y, cell.bg);
+                    self.fill_cell_background(x + dx, y, cell.bg);
                 }
             }
         }
 
         // Pass 2: Render all glyphs on top of backgrounds
-        for (x, y, cell) in &cells {
-            self.render_cell_glyph(*x, *y, cell);
+        for &(x, y, cell) in &cells {
+            self.render_cell_glyph(x, y, cell);
         }
 
         // Draw cursor if visible
