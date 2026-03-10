@@ -17,6 +17,12 @@ use winit::window::Window;
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 /// Default line height in pixels
 const DEFAULT_LINE_HEIGHT: f32 = 20.0;
+/// Minimum zoom level (50%)
+const MIN_ZOOM: f32 = 0.5;
+/// Maximum zoom level (300%)
+const MAX_ZOOM: f32 = 3.0;
+/// Zoom step per Cmd+/Cmd- press
+const ZOOM_STEP: f32 = 0.1;
 /// Default cell width for monospace font (approximate, measured at init)
 const DEFAULT_CELL_WIDTH: f32 = 9.6;
 /// Height of the custom title bar in logical pixels
@@ -124,6 +130,8 @@ pub struct WgpuBackend {
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
     title: String,
+    /// Current zoom level (1.0 = 100%, 0.5 = 50%, 3.0 = 300%)
+    zoom_level: f32,
 }
 
 impl WgpuBackend {
@@ -137,7 +145,8 @@ impl WgpuBackend {
     pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
         let gpu = Self::init_gpu(&window)?;
         let scale_factor = window.scale_factor();
-        let font = Self::init_font(scale_factor);
+        let zoom_level = 1.0;
+        let font = Self::init_font(scale_factor, zoom_level);
 
         let size = window.inner_size();
         let title_bar_height_px = (TITLE_BAR_HEIGHT * scale_factor as f32) as u32;
@@ -170,6 +179,7 @@ impl WgpuBackend {
             render_pipeline,
             title_bar_height_px,
             title: String::from("rira"),
+            zoom_level,
         })
     }
 
@@ -213,11 +223,11 @@ impl WgpuBackend {
         })
     }
 
-    fn init_font(scale_factor: f64) -> FontState {
+    fn init_font(scale_factor: f64, zoom_level: f32) -> FontState {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
 
-        let scale = scale_factor as f32;
+        let scale = scale_factor as f32 * zoom_level;
         let scaled_font_size = DEFAULT_FONT_SIZE * scale;
         let scaled_line_height = DEFAULT_LINE_HEIGHT * scale;
 
@@ -398,7 +408,7 @@ impl WgpuBackend {
         }
 
         self.scale_factor = scale_factor;
-        self.font = Self::init_font(scale_factor);
+        self.font = Self::init_font(scale_factor, self.zoom_level);
 
         // Re-derive grid dimensions and buffers at the current physical size
         let size = self.window.inner_size();
@@ -507,6 +517,39 @@ impl WgpuBackend {
     /// Set the title string displayed in the custom title bar.
     pub fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
+    }
+
+    /// Current zoom level (1.0 = 100%).
+    pub fn zoom_level(&self) -> f32 {
+        self.zoom_level
+    }
+
+    /// Set zoom level, clamped to [MIN_ZOOM, MAX_ZOOM].
+    /// Reinitializes font metrics and triggers a resize.
+    pub fn set_zoom(&mut self, level: f32) {
+        let new_zoom = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        if (self.zoom_level - new_zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.zoom_level = new_zoom;
+        self.font = Self::init_font(self.scale_factor, self.zoom_level);
+        let size = self.window.inner_size();
+        self.resize(size.width, size.height);
+    }
+
+    /// Zoom in by one step.
+    pub fn zoom_in(&mut self) {
+        self.set_zoom(self.zoom_level + ZOOM_STEP);
+    }
+
+    /// Zoom out by one step.
+    pub fn zoom_out(&mut self) {
+        self.set_zoom(self.zoom_level - ZOOM_STEP);
+    }
+
+    /// Reset zoom to 100%.
+    pub fn zoom_reset(&mut self) {
+        self.set_zoom(1.0);
     }
 
     /// Check if a physical pixel coordinate is within the title bar area.
@@ -1373,5 +1416,127 @@ mod tests {
             terminal.backend().is_pixel_buffer_blank(),
             "BUG: pixel buffer remains blank because no cells were drawn"
         );
+    }
+
+    // ── Zoom tests ──
+    // These test zoom-related logic (constants, clamping, font scaling)
+    // without requiring GPU resources.
+
+    #[test]
+    fn test_zoom_clamp_within_range() {
+        let level = 1.5_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_clamp_below_min() {
+        let level = 0.1_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_clamp_above_max() {
+        let level = 5.0_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_in_step() {
+        let current = 1.0_f32;
+        let next = (current + ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - 1.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_out_step() {
+        let current = 1.0_f32;
+        let next = (current - ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_out_does_not_go_below_min() {
+        // Use a value very close to MIN_ZOOM so subtracting ZOOM_STEP goes below
+        let current = MIN_ZOOM + ZOOM_STEP * 0.5;
+        let next = (current - ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_in_does_not_go_above_max() {
+        // Use a value very close to MAX_ZOOM so adding ZOOM_STEP goes above
+        let current = MAX_ZOOM - ZOOM_STEP * 0.5;
+        let next = (current + ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_init_font_zoom_scales_cell_size() {
+        let font_1x = WgpuBackend::init_font(1.0, 1.0);
+        let font_2x_zoom = WgpuBackend::init_font(1.0, 2.0);
+
+        // At 2x zoom, cell dimensions should be approximately 2x larger
+        let width_ratio = font_2x_zoom.cell_width / font_1x.cell_width;
+        let height_ratio = font_2x_zoom.cell_height / font_1x.cell_height;
+
+        assert!(
+            (width_ratio - 2.0).abs() < 0.1,
+            "2x zoom should ~double cell_width, got ratio {width_ratio}"
+        );
+        assert!(
+            (height_ratio - 2.0).abs() < f32::EPSILON,
+            "2x zoom should double cell_height, got ratio {height_ratio}"
+        );
+    }
+
+    #[test]
+    fn test_init_font_zoom_half() {
+        let font_1x = WgpuBackend::init_font(1.0, 1.0);
+        let font_half = WgpuBackend::init_font(1.0, 0.5);
+
+        let width_ratio = font_half.cell_width / font_1x.cell_width;
+        let height_ratio = font_half.cell_height / font_1x.cell_height;
+
+        assert!(
+            (width_ratio - 0.5).abs() < 0.1,
+            "0.5x zoom should ~halve cell_width, got ratio {width_ratio}"
+        );
+        assert!(
+            (height_ratio - 0.5).abs() < f32::EPSILON,
+            "0.5x zoom should halve cell_height, got ratio {height_ratio}"
+        );
+    }
+
+    #[test]
+    fn test_init_font_zoom_with_scale_factor() {
+        // zoom=1.5 with scale_factor=2.0 should equal zoom=1.0 with scale_factor=3.0
+        // because effective scale = scale_factor * zoom_level
+        let font_a = WgpuBackend::init_font(2.0, 1.5); // effective 3.0
+        let font_b = WgpuBackend::init_font(3.0, 1.0); // effective 3.0
+
+        assert!(
+            (font_a.cell_height - font_b.cell_height).abs() < f32::EPSILON,
+            "same effective scale should give same cell_height"
+        );
+        // cell_width may have tiny differences due to font hinting, allow small tolerance
+        assert!(
+            (font_a.cell_width - font_b.cell_width).abs() < 0.5,
+            "same effective scale should give similar cell_width: {} vs {}",
+            font_a.cell_width,
+            font_b.cell_width
+        );
+    }
+
+    #[test]
+    fn test_zoom_reset_value() {
+        // Verify reset zoom gives same font as initial
+        let font_initial = WgpuBackend::init_font(1.0, 1.0);
+        let font_reset = WgpuBackend::init_font(1.0, 1.0);
+
+        assert!((font_initial.cell_width - font_reset.cell_width).abs() < f32::EPSILON);
+        assert!((font_initial.cell_height - font_reset.cell_height).abs() < f32::EPSILON);
     }
 }

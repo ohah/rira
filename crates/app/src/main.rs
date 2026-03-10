@@ -108,6 +108,16 @@ impl App {
         }
     }
 
+    fn update_viewport_size(&mut self) {
+        if let Some(terminal) = self.terminal.as_ref() {
+            let term_height = terminal.size().unwrap_or_default().height;
+            let content_height = term_height.saturating_sub(4) as usize;
+            if content_height > 0 {
+                self.editor.viewport.visible_lines = content_height;
+            }
+        }
+    }
+
     fn render(&mut self) {
         let Some(terminal) = self.terminal.as_mut() else {
             return;
@@ -564,6 +574,33 @@ impl ApplicationHandler for App {
                                     }
                                 } else if let Err(e) = self.editor.undo() {
                                     log::error!("Undo failed: {e}");
+                                }
+                                self.render();
+                                return;
+                            }
+                            // Cmd+= or Cmd++ to zoom in
+                            "=" | "+" => {
+                                if let Some(terminal) = self.terminal.as_mut() {
+                                    terminal.backend_mut().zoom_in();
+                                    self.update_viewport_size();
+                                }
+                                self.render();
+                                return;
+                            }
+                            // Cmd+- to zoom out
+                            "-" => {
+                                if let Some(terminal) = self.terminal.as_mut() {
+                                    terminal.backend_mut().zoom_out();
+                                    self.update_viewport_size();
+                                }
+                                self.render();
+                                return;
+                            }
+                            // Cmd+0 to reset zoom
+                            "0" => {
+                                if let Some(terminal) = self.terminal.as_mut() {
+                                    terminal.backend_mut().zoom_reset();
+                                    self.update_viewport_size();
                                 }
                                 self.render();
                                 return;
