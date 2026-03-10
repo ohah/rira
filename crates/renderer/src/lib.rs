@@ -129,12 +129,15 @@ pub struct WgpuBackend {
     /// Buffer dimensions in pixels
     buf_width: u32,
     buf_height: u32,
-    /// wgpu texture for uploading the pixel buffer (recreated on resize)
+    /// wgpu texture for uploading the pixel buffer (recreated only when capacity exceeded)
     texture: wgpu::Texture,
-    /// Bind group for the fullscreen blit (recreated on resize)
+    /// Bind group for the fullscreen blit (recreated only when capacity exceeded)
     bind_group: wgpu::BindGroup,
     /// Immutable blit pipeline resources (created once, never recreated)
     blit: BlitPipeline,
+    /// Allocated texture capacity (may be larger than buf_width/buf_height)
+    tex_capacity_w: u32,
+    tex_capacity_h: u32,
     /// Title bar height in physical pixels (accounts for scale factor)
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
@@ -166,11 +169,16 @@ impl WgpuBackend {
 
         let buf_width = size.width.max(1);
         let buf_height = size.height.max(1);
+
+        // Over-allocate GPU texture to avoid recreation on resize (maximize/drag).
+        // Pixel buffer stays at actual size — only texture gets headroom.
+        let tex_capacity_w = Self::grow_capacity(buf_width);
+        let tex_capacity_h = Self::grow_capacity(buf_height);
         let pixel_buffer = vec![0u8; (buf_width * buf_height * 4) as usize];
 
         let blit = Self::create_blit_pipeline(&gpu.device, &gpu.surface_config);
         let (texture, bind_group) =
-            Self::create_texture_and_bind_group(&gpu.device, &blit, buf_width, buf_height);
+            Self::create_texture_and_bind_group(&gpu.device, &blit, tex_capacity_w, tex_capacity_h);
 
         Ok(Self {
             window,
@@ -187,6 +195,8 @@ impl WgpuBackend {
             texture,
             bind_group,
             blit,
+            tex_capacity_w,
+            tex_capacity_h,
             title_bar_height_px,
             title: String::from("rira"),
             zoom_level,
@@ -402,6 +412,13 @@ impl WgpuBackend {
         (texture, bind_group)
     }
 
+    /// Round up a dimension to avoid frequent reallocations.
+    /// Grows by ~50% and aligns to 256 pixels for GPU-friendly sizes.
+    fn grow_capacity(size: u32) -> u32 {
+        let grown = size + size / 2; // 1.5x
+        (grown + 255) & !255 // align to 256
+    }
+
     /// Handle a window resize event.
     ///
     /// `width` and `height` are in physical pixels (as returned by `window.inner_size()`).
@@ -427,25 +444,36 @@ impl WgpuBackend {
         self.buf_width = width;
         self.buf_height = height;
 
-        let required = (width * height * 4) as usize;
-        if size_changed {
-            // Only reallocate pixel buffer and GPU texture when dimensions actually change.
-            // Zoom changes font metrics but not window size, so this skips the expensive path.
-            if self.pixel_buffer.len() != required {
-                self.pixel_buffer = vec![0u8; required];
-            } else {
-                self.pixel_buffer.fill(0);
-            }
+        if !size_changed {
+            // Same dimensions (e.g. zoom change) — just zero the pixel buffer
+            let active = (width * height * 4) as usize;
+            self.pixel_buffer[..active].fill(0);
+            return;
+        }
 
-            // Only recreate texture + bind group (lightweight).
-            // Pipeline/shader/sampler/layout are reused from self.blit.
-            let (texture, bind_group) =
-                Self::create_texture_and_bind_group(&self.gpu.device, &self.blit, width, height);
+        let required = (width * height * 4) as usize;
+        let needs_texture_grow = width > self.tex_capacity_w || height > self.tex_capacity_h;
+
+        if needs_texture_grow {
+            // Grow texture capacity with headroom to avoid repeated GPU reallocs
+            self.tex_capacity_w = Self::grow_capacity(width).max(self.tex_capacity_w);
+            self.tex_capacity_h = Self::grow_capacity(height).max(self.tex_capacity_h);
+
+            let (texture, bind_group) = Self::create_texture_and_bind_group(
+                &self.gpu.device,
+                &self.blit,
+                self.tex_capacity_w,
+                self.tex_capacity_h,
+            );
             self.texture = texture;
             self.bind_group = bind_group;
+        }
+
+        // Reuse pixel buffer if capacity is sufficient, otherwise reallocate
+        if self.pixel_buffer.len() >= required {
+            self.pixel_buffer[..required].fill(0);
         } else {
-            // Same size — just zero out the pixel buffer
-            self.pixel_buffer.fill(0);
+            self.pixel_buffer = vec![0u8; required];
         }
     }
 
@@ -481,7 +509,9 @@ impl WgpuBackend {
     ///
     /// Returns `RenderError` if the surface texture cannot be acquired.
     pub fn present(&mut self) -> Result<(), RenderError> {
-        // Upload pixel buffer to texture
+        // Upload the active region pixel buffer to the (possibly larger) texture.
+        // pixel_buffer is sized exactly buf_width * buf_height (row stride = buf_width).
+        // wgpu copies buf_width pixels per row into the texture origin.
         self.gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -489,7 +519,7 @@ impl WgpuBackend {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &self.pixel_buffer,
+            &self.pixel_buffer[..(self.buf_width * self.buf_height * 4) as usize],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.buf_width * 4),
