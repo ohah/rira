@@ -17,6 +17,13 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::cli::{parse_file_arg, CliArgs};
 
+#[derive(Clone, Copy)]
+enum ZoomAction {
+    In,
+    Out,
+    Reset,
+}
+
 /// Returns true if the platform command key is pressed (Cmd on macOS, Ctrl elsewhere).
 fn is_cmd_pressed(modifiers: &ModifiersState) -> bool {
     if cfg!(target_os = "macos") {
@@ -106,6 +113,34 @@ impl App {
                 }
             }
         }
+    }
+
+    fn update_viewport_size(&mut self) {
+        if let Some(terminal) = self.terminal.as_ref() {
+            let term_height = terminal.size().unwrap_or_default().height;
+            let content_height = term_height.saturating_sub(4) as usize;
+            if content_height > 0 {
+                self.editor.viewport.visible_lines = content_height;
+            }
+        }
+    }
+
+    fn handle_zoom(&mut self, action: ZoomAction) {
+        if let Some(terminal) = self.terminal.as_mut() {
+            match action {
+                ZoomAction::In => terminal.backend_mut().zoom_in(),
+                ZoomAction::Out => terminal.backend_mut().zoom_out(),
+                ZoomAction::Reset => terminal.backend_mut().zoom_reset(),
+            }
+            // INVARIANT: terminal.clear() MUST be called after zoom change.
+            // set_zoom() calls resize() internally which recreates the pixel buffer
+            // as all zeros — same issue as window resize (see Resized handler).
+            if let Err(e) = terminal.clear() {
+                log::error!("Failed to clear terminal after zoom: {e}");
+            }
+        }
+        self.update_viewport_size();
+        self.render();
     }
 
     fn render(&mut self) {
@@ -566,6 +601,21 @@ impl ApplicationHandler for App {
                                     log::error!("Undo failed: {e}");
                                 }
                                 self.render();
+                                return;
+                            }
+                            // Cmd+= or Cmd++ to zoom in
+                            "=" | "+" => {
+                                self.handle_zoom(ZoomAction::In);
+                                return;
+                            }
+                            // Cmd+- to zoom out
+                            "-" => {
+                                self.handle_zoom(ZoomAction::Out);
+                                return;
+                            }
+                            // Cmd+0 to reset zoom
+                            "0" => {
+                                self.handle_zoom(ZoomAction::Reset);
                                 return;
                             }
                             _ => {}

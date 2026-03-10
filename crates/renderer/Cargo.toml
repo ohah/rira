@@ -13,6 +13,7 @@ ratatui.workspace = true
 winit.workspace = true
 pollster.workspace = true
 log.workspace = true
+unicode-width = "0.2"
 
 [lints]
 workspace = true

@@ -11,12 +11,19 @@ use cosmic_text::{
 use ratatui::backend::{ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
+use unicode_width::UnicodeWidthStr;
 use winit::window::Window;
 
 /// Default font size in pixels
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 /// Default line height in pixels
 const DEFAULT_LINE_HEIGHT: f32 = 20.0;
+/// Minimum zoom level (50%)
+const MIN_ZOOM: f32 = 0.5;
+/// Maximum zoom level (300%)
+const MAX_ZOOM: f32 = 3.0;
+/// Zoom step per Cmd+/Cmd- press
+const ZOOM_STEP: f32 = 0.1;
 /// Default cell width for monospace font (approximate, measured at init)
 const DEFAULT_CELL_WIDTH: f32 = 9.6;
 /// Height of the custom title bar in logical pixels
@@ -124,6 +131,8 @@ pub struct WgpuBackend {
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
     title: String,
+    /// Current zoom level (1.0 = 100%, 0.5 = 50%, 3.0 = 300%)
+    zoom_level: f32,
 }
 
 impl WgpuBackend {
@@ -137,7 +146,8 @@ impl WgpuBackend {
     pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
         let gpu = Self::init_gpu(&window)?;
         let scale_factor = window.scale_factor();
-        let font = Self::init_font(scale_factor);
+        let zoom_level = 1.0;
+        let font = Self::init_font(scale_factor, zoom_level);
 
         let size = window.inner_size();
         let title_bar_height_px = (TITLE_BAR_HEIGHT * scale_factor as f32) as u32;
@@ -170,6 +180,7 @@ impl WgpuBackend {
             render_pipeline,
             title_bar_height_px,
             title: String::from("rira"),
+            zoom_level,
         })
     }
 
@@ -213,11 +224,11 @@ impl WgpuBackend {
         })
     }
 
-    fn init_font(scale_factor: f64) -> FontState {
+    fn init_font(scale_factor: f64, zoom_level: f32) -> FontState {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
 
-        let scale = scale_factor as f32;
+        let scale = scale_factor as f32 * zoom_level;
         let scaled_font_size = DEFAULT_FONT_SIZE * scale;
         let scaled_line_height = DEFAULT_LINE_HEIGHT * scale;
 
@@ -398,7 +409,7 @@ impl WgpuBackend {
         }
 
         self.scale_factor = scale_factor;
-        self.font = Self::init_font(scale_factor);
+        self.font = Self::init_font(scale_factor, self.zoom_level);
 
         // Re-derive grid dimensions and buffers at the current physical size
         let size = self.window.inner_size();
@@ -507,6 +518,39 @@ impl WgpuBackend {
     /// Set the title string displayed in the custom title bar.
     pub fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
+    }
+
+    /// Current zoom level (1.0 = 100%).
+    pub fn zoom_level(&self) -> f32 {
+        self.zoom_level
+    }
+
+    /// Set zoom level, clamped to [MIN_ZOOM, MAX_ZOOM].
+    /// Reinitializes font metrics and triggers a resize.
+    pub fn set_zoom(&mut self, level: f32) {
+        let new_zoom = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        if (self.zoom_level - new_zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.zoom_level = new_zoom;
+        self.font = Self::init_font(self.scale_factor, self.zoom_level);
+        let size = self.window.inner_size();
+        self.resize(size.width, size.height);
+    }
+
+    /// Zoom in by one step.
+    pub fn zoom_in(&mut self) {
+        self.set_zoom(self.zoom_level + ZOOM_STEP);
+    }
+
+    /// Zoom out by one step.
+    pub fn zoom_out(&mut self) {
+        self.set_zoom(self.zoom_level - ZOOM_STEP);
+    }
+
+    /// Reset zoom to 100%.
+    pub fn zoom_reset(&mut self) {
+        self.set_zoom(1.0);
     }
 
     /// Check if a physical pixel coordinate is within the title bar area.
@@ -678,6 +722,35 @@ impl WgpuBackend {
 
     /// Render a single cell at grid position (col, row) into the pixel buffer.
     /// The cell is offset by the title bar height so ratatui content starts below it.
+    /// Fill only the background of a cell at the given grid position.
+    ///
+    /// Used to propagate background color to continuation cells of wide
+    /// characters (e.g. Korean/CJK), which ratatui resets to default style.
+    fn fill_cell_background(&mut self, col: u16, row: u16, bg: ratatui::style::Color) {
+        let px_x = (col as f32 * self.font.cell_width) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
+        let cw = self.font.cell_width.ceil() as u32;
+        let ch = self.font.cell_height.ceil() as u32;
+
+        let (bg_r, bg_g, bg_b) = color_to_rgb(bg, false);
+
+        for dy in 0..ch {
+            for dx in 0..cw {
+                let x = px_x + dx;
+                let y = px_y + dy;
+                if x < self.buf_width && y < self.buf_height {
+                    let idx = ((y * self.buf_width + x) * 4) as usize;
+                    if idx + 3 < self.pixel_buffer.len() {
+                        self.pixel_buffer[idx] = bg_r;
+                        self.pixel_buffer[idx + 1] = bg_g;
+                        self.pixel_buffer[idx + 2] = bg_b;
+                        self.pixel_buffer[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
     fn render_cell(&mut self, col: u16, row: u16, cell: &Cell) {
         let px_x = (col as f32 * self.font.cell_width) as u32;
         let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
@@ -844,6 +917,18 @@ impl ratatui::backend::Backend for WgpuBackend {
     {
         for (x, y, cell) in content {
             self.render_cell(x, y, cell);
+
+            // Wide characters (Korean/CJK) occupy 2+ cells but ratatui resets
+            // the continuation cells to default style, losing the background
+            // color. Propagate the background to continuation cells so that
+            // selection highlights appear as a continuous block.
+            let symbol = cell.symbol();
+            if !symbol.is_empty() && symbol != " " {
+                let char_width = UnicodeWidthStr::width(symbol);
+                for dx in 1..char_width as u16 {
+                    self.fill_cell_background(x + dx, y, cell.bg);
+                }
+            }
         }
 
         // Draw cursor if visible
@@ -1137,6 +1222,9 @@ mod tests {
         cleared: bool,
         /// Count of cells written via draw() in the most recent call
         cells_drawn: usize,
+        /// Track background color per cell for testing wide char bg propagation.
+        /// Indexed as [row * cols + col].
+        cell_bg: Vec<Color>,
     }
 
     impl PixelBufferBackend {
@@ -1154,6 +1242,7 @@ mod tests {
                 cursor_pos: Position { x: 0, y: 0 },
                 cleared: false,
                 cells_drawn: 0,
+                cell_bg: vec![Color::Reset; (cols as usize) * (rows as usize)],
             }
         }
 
@@ -1167,6 +1256,7 @@ mod tests {
             self.buf_height = rows as u32 * 20;
             // Recreate pixel buffer — all zeros, previous content is lost
             self.pixel_buffer = vec![0u8; (self.buf_width * self.buf_height * 4) as usize];
+            self.cell_bg = vec![Color::Reset; (cols as usize) * (rows as usize)];
         }
 
         /// Check if the pixel buffer is entirely zeroed (blank screen).
@@ -1180,6 +1270,22 @@ mod tests {
         }
     }
 
+    impl PixelBufferBackend {
+        /// Record the background color of a cell (for test assertions).
+        fn set_cell_bg(&mut self, col: u16, row: u16, bg: Color) {
+            let idx = row as usize * self.cols as usize + col as usize;
+            if idx < self.cell_bg.len() {
+                self.cell_bg[idx] = bg;
+            }
+        }
+
+        /// Read the background color of a cell at grid position.
+        fn get_cell_bg(&self, col: u16, row: u16) -> Color {
+            let idx = row as usize * self.cols as usize + col as usize;
+            self.cell_bg.get(idx).copied().unwrap_or(Color::Reset)
+        }
+    }
+
     impl ratatui::backend::Backend for PixelBufferBackend {
         type Error = io::Error;
 
@@ -1190,9 +1296,11 @@ mod tests {
             self.cells_drawn = 0;
             for (x, y, cell) in content {
                 self.cells_drawn += 1;
+
+                // Record background color for this cell
+                self.set_cell_bg(x, y, cell.bg);
+
                 // Write non-zero pixel data for each cell to simulate rendering.
-                // We fill the cell's pixel region with the foreground color so we
-                // can later verify the pixel buffer is not blank.
                 let (r, g, b) = color_to_rgb(cell.fg, true);
                 let px_x = x as u32 * 10;
                 let px_y = y as u32 * 20;
@@ -1209,6 +1317,16 @@ mod tests {
                                 self.pixel_buffer[idx + 3] = 255;
                             }
                         }
+                    }
+                }
+
+                // Wide character continuation cell background propagation
+                // (mirrors WgpuBackend::draw logic)
+                let symbol = cell.symbol();
+                if !symbol.is_empty() && symbol != " " {
+                    let char_width = UnicodeWidthStr::width(symbol);
+                    for dx in 1..char_width as u16 {
+                        self.set_cell_bg(x + dx, y, cell.bg);
                     }
                 }
             }
@@ -1373,5 +1491,285 @@ mod tests {
             terminal.backend().is_pixel_buffer_blank(),
             "BUG: pixel buffer remains blank because no cells were drawn"
         );
+    }
+
+    // ── Zoom tests ──
+    // These test zoom-related logic (constants, clamping, font scaling)
+    // without requiring GPU resources.
+
+    #[test]
+    fn test_zoom_clamp_within_range() {
+        let level = 1.5_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_clamp_below_min() {
+        let level = 0.1_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_clamp_above_max() {
+        let level = 5.0_f32;
+        let clamped = level.clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((clamped - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_in_step() {
+        let current = 1.0_f32;
+        let next = (current + ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - 1.1).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_out_step() {
+        let current = 1.0_f32;
+        let next = (current - ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_out_does_not_go_below_min() {
+        // Use a value very close to MIN_ZOOM so subtracting ZOOM_STEP goes below
+        let current = MIN_ZOOM + ZOOM_STEP * 0.5;
+        let next = (current - ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_zoom_in_does_not_go_above_max() {
+        // Use a value very close to MAX_ZOOM so adding ZOOM_STEP goes above
+        let current = MAX_ZOOM - ZOOM_STEP * 0.5;
+        let next = (current + ZOOM_STEP).clamp(MIN_ZOOM, MAX_ZOOM);
+        assert!((next - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_init_font_zoom_scales_cell_size() {
+        let font_1x = WgpuBackend::init_font(1.0, 1.0);
+        let font_2x_zoom = WgpuBackend::init_font(1.0, 2.0);
+
+        // At 2x zoom, cell dimensions should be approximately 2x larger
+        let width_ratio = font_2x_zoom.cell_width / font_1x.cell_width;
+        let height_ratio = font_2x_zoom.cell_height / font_1x.cell_height;
+
+        assert!(
+            (width_ratio - 2.0).abs() < 0.1,
+            "2x zoom should ~double cell_width, got ratio {width_ratio}"
+        );
+        assert!(
+            (height_ratio - 2.0).abs() < f32::EPSILON,
+            "2x zoom should double cell_height, got ratio {height_ratio}"
+        );
+    }
+
+    #[test]
+    fn test_init_font_zoom_half() {
+        let font_1x = WgpuBackend::init_font(1.0, 1.0);
+        let font_half = WgpuBackend::init_font(1.0, 0.5);
+
+        let width_ratio = font_half.cell_width / font_1x.cell_width;
+        let height_ratio = font_half.cell_height / font_1x.cell_height;
+
+        assert!(
+            (width_ratio - 0.5).abs() < 0.1,
+            "0.5x zoom should ~halve cell_width, got ratio {width_ratio}"
+        );
+        assert!(
+            (height_ratio - 0.5).abs() < f32::EPSILON,
+            "0.5x zoom should halve cell_height, got ratio {height_ratio}"
+        );
+    }
+
+    #[test]
+    fn test_init_font_zoom_with_scale_factor() {
+        // zoom=1.5 with scale_factor=2.0 should equal zoom=1.0 with scale_factor=3.0
+        // because effective scale = scale_factor * zoom_level
+        let font_a = WgpuBackend::init_font(2.0, 1.5); // effective 3.0
+        let font_b = WgpuBackend::init_font(3.0, 1.0); // effective 3.0
+
+        assert!(
+            (font_a.cell_height - font_b.cell_height).abs() < f32::EPSILON,
+            "same effective scale should give same cell_height"
+        );
+        // cell_width may have tiny differences due to font hinting, allow small tolerance
+        assert!(
+            (font_a.cell_width - font_b.cell_width).abs() < 0.5,
+            "same effective scale should give similar cell_width: {} vs {}",
+            font_a.cell_width,
+            font_b.cell_width
+        );
+    }
+
+    #[test]
+    fn test_zoom_reset_value() {
+        // Verify reset zoom gives same font as initial
+        let font_initial = WgpuBackend::init_font(1.0, 1.0);
+        let font_reset = WgpuBackend::init_font(1.0, 1.0);
+
+        assert!((font_initial.cell_width - font_reset.cell_width).abs() < f32::EPSILON);
+        assert!((font_initial.cell_height - font_reset.cell_height).abs() < f32::EPSILON);
+    }
+
+    // ── Wide character (CJK) selection background tests ──
+    //
+    // ratatui resets continuation cells of wide characters (Korean, CJK)
+    // to default style via Cell::reset(). This causes selection highlights
+    // to appear as individual blocks per character instead of a continuous
+    // bar. The fix propagates the parent cell's background color to
+    // continuation cells during draw().
+
+    use ratatui::text::{Line, Span};
+    use unicode_width::UnicodeWidthStr;
+
+    /// Helper: render a Line with spans to the test backend and return
+    /// the terminal so tests can inspect the pixel buffer.
+    fn render_line_to_backend(
+        cols: u16,
+        rows: u16,
+        line: Line<'_>,
+    ) -> Terminal<PixelBufferBackend> {
+        let backend = PixelBufferBackend::new(cols, rows);
+        let mut terminal = Terminal::new(backend).expect("terminal creation should succeed");
+        terminal.clear().expect("clear should succeed");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let paragraph = Paragraph::new(line);
+                frame.render_widget(paragraph, area);
+            })
+            .expect("draw should succeed");
+        terminal
+    }
+
+    #[test]
+    fn test_wide_char_continuation_cell_gets_selection_bg() {
+        // Render a Korean character "한" with blue selection background.
+        // "한" is a wide character (width=2), so it occupies cells 0 and 1.
+        // Cell 1 is a continuation cell that ratatui resets to default.
+        // Our fix should propagate the blue background to cell 1.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("한", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Cell 0: the wide character itself — should have blue bg
+        assert_eq!(
+            terminal.backend().get_cell_bg(0, 0),
+            Color::Blue,
+            "cell 0 (wide char) should have selection bg"
+        );
+
+        // Cell 1: continuation cell — must also have blue bg (the fix)
+        assert_eq!(
+            terminal.backend().get_cell_bg(1, 0),
+            Color::Blue,
+            "cell 1 (continuation) should have selection bg"
+        );
+    }
+
+    #[test]
+    fn test_multiple_wide_chars_continuous_selection_bg() {
+        // "한글" = two wide characters, occupying cells 0-1 and 2-3.
+        // All four cells should have blue background for continuous selection.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("한글", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..4u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "cell {col} should have selection bg for continuous highlight"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wide_char_per_char_spans_continuous_selection() {
+        // Simulate the cursor-line rendering path where each character
+        // gets its own Span. Both continuation cells should still have
+        // the selection background.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(vec![
+            Span::styled("한", selection_style),
+            Span::styled("글", selection_style),
+        ]);
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..4u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "cell {col} (per-char spans) should have selection bg"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_ascii_and_wide_char_selection() {
+        // "aB한c" where "B한" is selected (blue bg).
+        // Layout: a(0) B(1) 한(2,3) c(4)
+        // Cells 1-3 should have blue bg, cells 0 and 4 should have default bg.
+        let default_style = Style::default().fg(Color::White);
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+
+        let line = Line::from(vec![
+            Span::styled("a", default_style),
+            Span::styled("B한", selection_style),
+            Span::styled("c", default_style),
+        ]);
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Cell 0: 'a' — default bg
+        assert_eq!(terminal.backend().get_cell_bg(0, 0), Color::Reset);
+        // Cell 1: 'B' — selection bg
+        assert_eq!(terminal.backend().get_cell_bg(1, 0), Color::Blue);
+        // Cell 2: '한' — selection bg
+        assert_eq!(terminal.backend().get_cell_bg(2, 0), Color::Blue);
+        // Cell 3: continuation of '한' — selection bg (the fix)
+        assert_eq!(
+            terminal.backend().get_cell_bg(3, 0),
+            Color::Blue,
+            "continuation cell of '한' in mixed text should have selection bg"
+        );
+        // Cell 4: 'c' — default bg
+        assert_eq!(terminal.backend().get_cell_bg(4, 0), Color::Reset);
+    }
+
+    #[test]
+    fn test_ascii_selection_unaffected() {
+        // Pure ASCII selection should work as before — no continuation cells.
+        let selection_style = Style::default().fg(Color::White).bg(Color::Blue);
+        let line = Line::from(Span::styled("abc", selection_style));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        for col in 0..3u16 {
+            assert_eq!(
+                terminal.backend().get_cell_bg(col, 0),
+                Color::Blue,
+                "ASCII cell {col} should have selection bg"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wide_char_no_selection_default_bg() {
+        // Wide character without selection should have default background.
+        let line = Line::from(Span::styled("한", Style::default().fg(Color::White)));
+
+        let terminal = render_line_to_backend(10, 1, line);
+
+        // Both cells (character + continuation) should have default bg
+        assert_eq!(terminal.backend().get_cell_bg(0, 0), Color::Reset);
+        assert_eq!(terminal.backend().get_cell_bg(1, 0), Color::Reset);
     }
 }
