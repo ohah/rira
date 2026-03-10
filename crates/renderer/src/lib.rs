@@ -3,7 +3,6 @@
 //! Renders a ratatui cell grid to a GPU-backed window using wgpu.
 //! Text shaping is handled by cosmic-text with monospace fonts.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use cosmic_text::{
@@ -90,26 +89,6 @@ struct GpuState {
     surface_config: wgpu::SurfaceConfiguration,
 }
 
-/// Immutable GPU pipeline resources created once at startup.
-/// Shader compilation and pipeline creation are expensive — do them only once.
-struct BlitPipeline {
-    render_pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-}
-
-/// Cached rasterized glyph bitmap with placement info.
-#[derive(Clone)]
-struct CachedGlyph {
-    /// Pre-blended RGBA pixels (width * height * 4 bytes)
-    rgba: Vec<u8>,
-    width: u32,
-    height: u32,
-    /// Offset from cell origin
-    offset_x: i32,
-    offset_y: i32,
-}
-
 /// Font rendering state using cosmic-text.
 struct FontState {
     font_system: FontSystem,
@@ -118,8 +97,6 @@ struct FontState {
     cell_width: f32,
     /// Physical (scaled) cell height in pixels
     cell_height: f32,
-    /// Glyph cache: (symbol, fg_r, fg_g, fg_b) → pre-rasterized bitmap
-    glyph_cache: HashMap<(String, u8, u8, u8), CachedGlyph>,
 }
 
 /// A wgpu + cosmic-text backend for ratatui.
@@ -148,8 +125,8 @@ pub struct WgpuBackend {
     texture: wgpu::Texture,
     /// Bind group for the fullscreen blit
     bind_group: wgpu::BindGroup,
-    /// Immutable blit pipeline resources (created once, never recreated)
-    blit: BlitPipeline,
+    /// Render pipeline for fullscreen blit
+    render_pipeline: wgpu::RenderPipeline,
     /// Title bar height in physical pixels (accounts for scale factor)
     title_bar_height_px: u32,
     /// Current title string displayed in the title bar
@@ -181,12 +158,10 @@ impl WgpuBackend {
 
         let buf_width = size.width.max(1);
         let buf_height = size.height.max(1);
-
         let pixel_buffer = vec![0u8; (buf_width * buf_height * 4) as usize];
 
-        let blit = Self::create_blit_pipeline(&gpu.device, &gpu.surface_config);
-        let (texture, bind_group) =
-            Self::create_texture_and_bind_group(&gpu.device, &blit, buf_width, buf_height);
+        let (texture, bind_group, render_pipeline) =
+            Self::create_blit_resources(&gpu.device, buf_width, buf_height, &gpu.surface_config);
 
         Ok(Self {
             window,
@@ -202,7 +177,7 @@ impl WgpuBackend {
             buf_height,
             texture,
             bind_group,
-            blit,
+            render_pipeline,
             title_bar_height_px,
             title: String::from("rira"),
             zoom_level,
@@ -252,38 +227,22 @@ impl WgpuBackend {
     fn init_font(scale_factor: f64, zoom_level: f32) -> FontState {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
-        let (cell_width, cell_height) =
-            Self::measure_cell_size(&mut font_system, scale_factor, zoom_level);
 
-        FontState {
-            font_system,
-            swash_cache,
-            cell_width,
-            cell_height,
-            glyph_cache: HashMap::new(),
-        }
-    }
-
-    /// Measure cell dimensions at the given scale without recreating the font system.
-    fn measure_cell_size(
-        font_system: &mut FontSystem,
-        scale_factor: f64,
-        zoom_level: f32,
-    ) -> (f32, f32) {
         let scale = scale_factor as f32 * zoom_level;
         let scaled_font_size = DEFAULT_FONT_SIZE * scale;
         let scaled_line_height = DEFAULT_LINE_HEIGHT * scale;
 
+        // Measure cell width using a monospace 'M' character at the scaled size
         let metrics = Metrics::new(scaled_font_size, scaled_line_height);
-        let mut measure_buf = CosmicBuffer::new(font_system, metrics);
+        let mut measure_buf = CosmicBuffer::new(&mut font_system, metrics);
         measure_buf.set_text(
-            font_system,
+            &mut font_system,
             "M",
             &Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
             None,
         );
-        measure_buf.shape_until_scroll(font_system, false);
+        measure_buf.shape_until_scroll(&mut font_system, false);
 
         let cell_width = measure_buf
             .layout_runs()
@@ -291,15 +250,37 @@ impl WgpuBackend {
             .and_then(|run| run.glyphs.first().map(|g| g.w))
             .unwrap_or(DEFAULT_CELL_WIDTH * scale);
 
-        (cell_width, scaled_line_height)
+        FontState {
+            font_system,
+            swash_cache,
+            cell_width,
+            cell_height: scaled_line_height,
+        }
     }
 
-    /// Create the immutable blit pipeline (shader, pipeline, layout, sampler).
-    /// Called once at startup. These resources never change.
-    fn create_blit_pipeline(
+    fn create_blit_resources(
         device: &wgpu::Device,
+        width: u32,
+        height: u32,
         surface_config: &wgpu::SurfaceConfiguration,
-    ) -> BlitPipeline {
+    ) -> (wgpu::Texture, wgpu::BindGroup, wgpu::RenderPipeline) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rira-cell-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rira-sampler"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -325,6 +306,21 @@ impl WgpuBackend {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
+                },
+            ],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rira-blit-bg"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
         });
@@ -369,54 +365,7 @@ impl WgpuBackend {
             cache: None,
         });
 
-        BlitPipeline {
-            render_pipeline,
-            bind_group_layout,
-            sampler,
-        }
-    }
-
-    /// Create only the size-dependent resources: texture + bind group.
-    /// Called on every resize. Reuses the immutable pipeline/sampler/layout.
-    fn create_texture_and_bind_group(
-        device: &wgpu::Device,
-        blit: &BlitPipeline,
-        width: u32,
-        height: u32,
-    ) -> (wgpu::Texture, wgpu::BindGroup) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rira-cell-texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rira-blit-bg"),
-            layout: &blit.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&blit.sampler),
-                },
-            ],
-        });
-
-        (texture, bind_group)
+        (texture, bind_group, render_pipeline)
     }
 
     /// Handle a window resize event.
@@ -440,26 +389,15 @@ impl WgpuBackend {
         self.grid_cols = (width as f32 / self.font.cell_width) as u16;
         self.grid_rows = (content_height as f32 / self.font.cell_height) as u16;
 
-        let size_changed = self.buf_width != width || self.buf_height != height;
         self.buf_width = width;
         self.buf_height = height;
+        self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
 
-        if !size_changed {
-            self.pixel_buffer.fill(0);
-            return;
-        }
-
-        let required = (width * height * 4) as usize;
-        if self.pixel_buffer.len() == required {
-            self.pixel_buffer.fill(0);
-        } else {
-            self.pixel_buffer = vec![0u8; required];
-        }
-
-        let (texture, bind_group) =
-            Self::create_texture_and_bind_group(&self.gpu.device, &self.blit, width, height);
+        let (texture, bind_group, render_pipeline) =
+            Self::create_blit_resources(&self.gpu.device, width, height, &self.gpu.surface_config);
         self.texture = texture;
         self.bind_group = bind_group;
+        self.render_pipeline = render_pipeline;
     }
 
     /// Handle a scale factor change (e.g., window moved between displays).
@@ -471,13 +409,7 @@ impl WgpuBackend {
         }
 
         self.scale_factor = scale_factor;
-        // Reuse existing FontSystem — avoids expensive system font re-scan
-        let (cw, ch) =
-            Self::measure_cell_size(&mut self.font.font_system, scale_factor, self.zoom_level);
-        self.font.cell_width = cw;
-        self.font.cell_height = ch;
-        self.font.swash_cache = SwashCache::new();
-        self.font.glyph_cache.clear();
+        self.font = Self::init_font(scale_factor, self.zoom_level);
 
         // Re-derive grid dimensions and buffers at the current physical size
         let size = self.window.inner_size();
@@ -495,6 +427,7 @@ impl WgpuBackend {
     ///
     /// Returns `RenderError` if the surface texture cannot be acquired.
     pub fn present(&mut self) -> Result<(), RenderError> {
+        // Upload pixel buffer to texture
         self.gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -546,7 +479,7 @@ impl WgpuBackend {
                 depth_stencil_attachment: None,
                 ..Default::default()
             });
-            render_pass.set_pipeline(&self.blit.render_pipeline);
+            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
@@ -600,13 +533,7 @@ impl WgpuBackend {
             return;
         }
         self.zoom_level = new_zoom;
-        // Reuse existing FontSystem — avoids expensive system font re-scan
-        let (cw, ch) =
-            Self::measure_cell_size(&mut self.font.font_system, self.scale_factor, new_zoom);
-        self.font.cell_width = cw;
-        self.font.cell_height = ch;
-        self.font.swash_cache = SwashCache::new();
-        self.font.glyph_cache.clear();
+        self.font = Self::init_font(self.scale_factor, self.zoom_level);
         let size = self.window.inner_size();
         self.resize(size.width, size.height);
     }
@@ -850,8 +777,19 @@ impl WgpuBackend {
         }
     }
 
-    /// Rasterize a glyph and store as pre-multiplied RGBA with alpha in the cache.
-    fn rasterize_glyph(&mut self, sym: &str, fg_r: u8, fg_g: u8, fg_b: u8) -> CachedGlyph {
+    /// Render only the glyph of a cell at grid position (col, row).
+    fn render_cell_glyph(&mut self, col: u16, row: u16, cell: &Cell) {
+        let px_x = (col as f32 * self.font.cell_width) as u32;
+        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
+
+        // Render glyph
+        let sym = cell.symbol();
+        if sym.is_empty() || sym == " " {
+            return;
+        }
+
+        let (fg_r, fg_g, fg_b) = color_to_rgb(cell.fg, true);
+
         let scale = self.scale_factor as f32 * self.zoom_level;
         let metrics = Metrics::new(DEFAULT_FONT_SIZE * scale, DEFAULT_LINE_HEIGHT * scale);
         let mut buf = CosmicBuffer::new(&mut self.font.font_system, metrics);
@@ -864,16 +802,10 @@ impl WgpuBackend {
         );
         buf.shape_until_scroll(&mut self.font.font_system, false);
 
-        // Find the glyph image
-        let mut result_rgba = Vec::new();
-        let mut result_w = 0u32;
-        let mut result_h = 0u32;
-        let mut result_ox = 0i32;
-        let mut result_oy = 0i32;
-
         for run in buf.layout_runs() {
             for glyph in run.glyphs {
                 let physical = glyph.physical((0.0, 0.0), 1.0);
+
                 let image = self
                     .font
                     .swash_cache
@@ -881,14 +813,24 @@ impl WgpuBackend {
                     .clone();
 
                 if let Some(ref img) = image {
-                    let w = img.placement.width;
-                    let h = img.placement.height;
-                    let mut rgba = vec![0u8; (w * h * 4) as usize];
+                    let glyph_x = px_x as i32 + physical.x + img.placement.left;
+                    let glyph_y =
+                        px_y as i32 + (run.line_y as i32) + physical.y - img.placement.top;
 
-                    for gy in 0..h {
-                        for gx in 0..w {
-                            let src_idx = (gy * w + gx) as usize;
-                            let dst = (gy * w + gx) as usize * 4;
+                    for gy in 0..img.placement.height as i32 {
+                        for gx in 0..img.placement.width as i32 {
+                            let dest_x = glyph_x + gx;
+                            let dest_y = glyph_y + gy;
+
+                            if dest_x < 0
+                                || dest_y < 0
+                                || dest_x >= self.buf_width as i32
+                                || dest_y >= self.buf_height as i32
+                            {
+                                continue;
+                            }
+
+                            let src_idx = (gy as u32 * img.placement.width + gx as u32) as usize;
 
                             let alpha = match img.content {
                                 cosmic_text::SwashContent::Mask => {
@@ -898,106 +840,48 @@ impl WgpuBackend {
                                     img.data.get(src_idx * 4 + 3).copied().unwrap_or(0)
                                 }
                                 cosmic_text::SwashContent::SubpixelMask => {
+                                    // Use the green channel as alpha for simplicity
                                     img.data.get(src_idx * 3 + 1).copied().unwrap_or(0)
                                 }
                             };
 
-                            let (r, g, b) = match img.content {
-                                cosmic_text::SwashContent::Color => {
-                                    let sr = img.data.get(src_idx * 4).copied().unwrap_or(0);
-                                    let sg = img.data.get(src_idx * 4 + 1).copied().unwrap_or(0);
-                                    let sb = img.data.get(src_idx * 4 + 2).copied().unwrap_or(0);
-                                    (sr, sg, sb)
-                                }
-                                _ => (fg_r, fg_g, fg_b),
-                            };
+                            if alpha == 0 {
+                                continue;
+                            }
 
-                            rgba[dst] = r;
-                            rgba[dst + 1] = g;
-                            rgba[dst + 2] = b;
-                            rgba[dst + 3] = alpha;
+                            let idx =
+                                ((dest_y as u32 * self.buf_width + dest_x as u32) * 4) as usize;
+                            if idx + 3 < self.pixel_buffer.len() {
+                                let a = alpha as f32 / 255.0;
+                                let inv_a = 1.0 - a;
+                                match img.content {
+                                    cosmic_text::SwashContent::Color => {
+                                        let sr = img.data.get(src_idx * 4).copied().unwrap_or(0);
+                                        let sg =
+                                            img.data.get(src_idx * 4 + 1).copied().unwrap_or(0);
+                                        let sb =
+                                            img.data.get(src_idx * 4 + 2).copied().unwrap_or(0);
+                                        self.pixel_buffer[idx] =
+                                            blend(sr, self.pixel_buffer[idx], a, inv_a);
+                                        self.pixel_buffer[idx + 1] =
+                                            blend(sg, self.pixel_buffer[idx + 1], a, inv_a);
+                                        self.pixel_buffer[idx + 2] =
+                                            blend(sb, self.pixel_buffer[idx + 2], a, inv_a);
+                                    }
+                                    _ => {
+                                        self.pixel_buffer[idx] =
+                                            blend(fg_r, self.pixel_buffer[idx], a, inv_a);
+                                        self.pixel_buffer[idx + 1] =
+                                            blend(fg_g, self.pixel_buffer[idx + 1], a, inv_a);
+                                        self.pixel_buffer[idx + 2] =
+                                            blend(fg_b, self.pixel_buffer[idx + 2], a, inv_a);
+                                    }
+                                }
+                                self.pixel_buffer[idx + 3] = 255;
+                            }
                         }
                     }
-
-                    result_rgba = rgba;
-                    result_w = w;
-                    result_h = h;
-                    result_ox = physical.x + img.placement.left;
-                    result_oy = run.line_y as i32 + physical.y - img.placement.top;
                 }
-            }
-        }
-
-        CachedGlyph {
-            rgba: result_rgba,
-            width: result_w,
-            height: result_h,
-            offset_x: result_ox,
-            offset_y: result_oy,
-        }
-    }
-
-    /// Render only the glyph of a cell at grid position (col, row).
-    /// Uses glyph cache to avoid repeated cosmic-text shaping + rasterization.
-    fn render_cell_glyph(&mut self, col: u16, row: u16, cell: &Cell) {
-        let px_x = (col as f32 * self.font.cell_width) as u32;
-        let px_y = (row as f32 * self.font.cell_height) as u32 + self.title_bar_height_px;
-
-        let sym = cell.symbol();
-        if sym.is_empty() || sym == " " {
-            return;
-        }
-
-        let (fg_r, fg_g, fg_b) = color_to_rgb(cell.fg, true);
-        let cache_key = (sym.to_string(), fg_r, fg_g, fg_b);
-
-        // Check cache or rasterize
-        if !self.font.glyph_cache.contains_key(&cache_key) {
-            let cached = self.rasterize_glyph(sym, fg_r, fg_g, fg_b);
-            self.font.glyph_cache.insert(cache_key.clone(), cached);
-        }
-        let Some(glyph) = self.font.glyph_cache.get(&cache_key) else {
-            return;
-        };
-
-        if glyph.rgba.is_empty() {
-            return;
-        }
-
-        // Blit cached RGBA bitmap to pixel buffer
-        let glyph_x = px_x as i32 + glyph.offset_x;
-        let glyph_y = px_y as i32 + glyph.offset_y;
-        let buf_w = self.buf_width as i32;
-        let buf_h = self.buf_height as i32;
-
-        for gy in 0..glyph.height as i32 {
-            let dest_y = glyph_y + gy;
-            if dest_y < 0 || dest_y >= buf_h {
-                continue;
-            }
-            let row_base = dest_y as u32 * self.buf_width;
-
-            for gx in 0..glyph.width as i32 {
-                let dest_x = glyph_x + gx;
-                if dest_x < 0 || dest_x >= buf_w {
-                    continue;
-                }
-
-                let src = ((gy as u32 * glyph.width + gx as u32) * 4) as usize;
-                let alpha = glyph.rgba[src + 3];
-                if alpha == 0 {
-                    continue;
-                }
-
-                let idx = ((row_base + dest_x as u32) * 4) as usize;
-                let a = alpha as f32 / 255.0;
-                let inv_a = 1.0 - a;
-                self.pixel_buffer[idx] = blend(glyph.rgba[src], self.pixel_buffer[idx], a, inv_a);
-                self.pixel_buffer[idx + 1] =
-                    blend(glyph.rgba[src + 1], self.pixel_buffer[idx + 1], a, inv_a);
-                self.pixel_buffer[idx + 2] =
-                    blend(glyph.rgba[src + 2], self.pixel_buffer[idx + 2], a, inv_a);
-                self.pixel_buffer[idx + 3] = 255;
             }
         }
     }
@@ -1040,13 +924,11 @@ impl ratatui::backend::Backend for WgpuBackend {
         // Two-pass rendering: backgrounds first, then glyphs.
         // This prevents continuation cell backgrounds from overwriting
         // the right half of wide character (Korean/CJK) glyphs.
-        //
-        // We store references to avoid cloning Cell objects every frame.
-        let cells: Vec<(u16, u16, &Cell)> = content.collect();
+        let cells: Vec<(u16, u16, Cell)> = content.map(|(x, y, c)| (x, y, c.clone())).collect();
 
         // Pass 1: Fill all backgrounds (including wide char continuation cells)
-        for &(x, y, cell) in &cells {
-            self.render_cell_bg(x, y, cell);
+        for (x, y, cell) in &cells {
+            self.render_cell_bg(*x, *y, cell);
 
             // Wide characters occupy 2+ cells but ratatui resets
             // continuation cells to default style. Propagate the
@@ -1055,14 +937,14 @@ impl ratatui::backend::Backend for WgpuBackend {
             if !symbol.is_empty() && symbol != " " {
                 let char_width = UnicodeWidthStr::width(symbol);
                 for dx in 1..char_width as u16 {
-                    self.fill_cell_background(x + dx, y, cell.bg);
+                    self.fill_cell_background(x + dx, *y, cell.bg);
                 }
             }
         }
 
         // Pass 2: Render all glyphs on top of backgrounds
-        for &(x, y, cell) in &cells {
-            self.render_cell_glyph(x, y, cell);
+        for (x, y, cell) in &cells {
+            self.render_cell_glyph(*x, *y, cell);
         }
 
         // Draw cursor if visible

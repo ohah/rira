@@ -461,8 +461,8 @@ impl ApplicationHandler for App {
                         log::error!("Failed to clear terminal after resize: {e}");
                     }
                 }
-                self.update_viewport_size();
-                self.request_redraw();
+                // Re-render after resize
+                self.render();
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
