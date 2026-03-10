@@ -386,7 +386,7 @@ mod tests {
         HitTestConfig {
             cell_width,
             line_height,
-            content_x: cell_width,                   // 1 cell left border
+            content_x: cell_width,                     // 1 cell left border
             content_y: title_bar_height + line_height, // title bar + 1 cell top border
             scroll_offset: 0,
         }

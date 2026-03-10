@@ -1,6 +1,7 @@
 mod cli;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use clap::Parser;
 use ratatui::style::{Color, Modifier, Style};
@@ -51,6 +52,8 @@ struct App {
     clipboard: Option<arboard::Clipboard>,
     /// Whether left mouse button is currently pressed (for drag selection)
     mouse_dragging: bool,
+    /// Last title bar click time for double-click detection
+    last_title_bar_click: Option<Instant>,
 }
 
 impl App {
@@ -65,6 +68,7 @@ impl App {
             modifiers: ModifiersState::empty(),
             clipboard: arboard::Clipboard::new().ok(),
             mouse_dragging: false,
+            last_title_bar_click: None,
         }
     }
 
@@ -801,8 +805,20 @@ impl ApplicationHandler for App {
                     let physical_y = self.cursor_position.1;
 
                     if backend.is_in_title_bar(0.0, physical_y as f32) {
-                        // Click is in the title bar area, initiate window drag
-                        if let Some(window) = &self.window {
+                        // Double-click on title bar toggles maximize/restore
+                        let now = Instant::now();
+                        let is_double_click = self
+                            .last_title_bar_click
+                            .is_some_and(|last| now.duration_since(last).as_millis() < 400);
+                        self.last_title_bar_click = Some(now);
+
+                        if is_double_click {
+                            if let Some(window) = &self.window {
+                                window.set_maximized(!window.is_maximized());
+                            }
+                            self.last_title_bar_click = None;
+                        } else if let Some(window) = &self.window {
+                            // Single click: initiate window drag
                             if let Err(e) = window.drag_window() {
                                 log::warn!("Failed to drag window: {e}");
                             }
