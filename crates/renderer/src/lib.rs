@@ -227,22 +227,37 @@ impl WgpuBackend {
     fn init_font(scale_factor: f64, zoom_level: f32) -> FontState {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
+        let (cell_width, cell_height) =
+            Self::measure_cell_size(&mut font_system, scale_factor, zoom_level);
 
+        FontState {
+            font_system,
+            swash_cache,
+            cell_width,
+            cell_height,
+        }
+    }
+
+    /// Measure cell dimensions at the given scale without recreating the font system.
+    fn measure_cell_size(
+        font_system: &mut FontSystem,
+        scale_factor: f64,
+        zoom_level: f32,
+    ) -> (f32, f32) {
         let scale = scale_factor as f32 * zoom_level;
         let scaled_font_size = DEFAULT_FONT_SIZE * scale;
         let scaled_line_height = DEFAULT_LINE_HEIGHT * scale;
 
-        // Measure cell width using a monospace 'M' character at the scaled size
         let metrics = Metrics::new(scaled_font_size, scaled_line_height);
-        let mut measure_buf = CosmicBuffer::new(&mut font_system, metrics);
+        let mut measure_buf = CosmicBuffer::new(font_system, metrics);
         measure_buf.set_text(
-            &mut font_system,
+            font_system,
             "M",
             &Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
             None,
         );
-        measure_buf.shape_until_scroll(&mut font_system, false);
+        measure_buf.shape_until_scroll(font_system, false);
 
         let cell_width = measure_buf
             .layout_runs()
@@ -250,12 +265,7 @@ impl WgpuBackend {
             .and_then(|run| run.glyphs.first().map(|g| g.w))
             .unwrap_or(DEFAULT_CELL_WIDTH * scale);
 
-        FontState {
-            font_system,
-            swash_cache,
-            cell_width,
-            cell_height: scaled_line_height,
-        }
+        (cell_width, scaled_line_height)
     }
 
     fn create_blit_resources(
@@ -409,7 +419,12 @@ impl WgpuBackend {
         }
 
         self.scale_factor = scale_factor;
-        self.font = Self::init_font(scale_factor, self.zoom_level);
+        // Reuse existing FontSystem — avoids expensive system font re-scan
+        let (cw, ch) =
+            Self::measure_cell_size(&mut self.font.font_system, scale_factor, self.zoom_level);
+        self.font.cell_width = cw;
+        self.font.cell_height = ch;
+        self.font.swash_cache = SwashCache::new();
 
         // Re-derive grid dimensions and buffers at the current physical size
         let size = self.window.inner_size();
@@ -533,7 +548,12 @@ impl WgpuBackend {
             return;
         }
         self.zoom_level = new_zoom;
-        self.font = Self::init_font(self.scale_factor, self.zoom_level);
+        // Reuse existing FontSystem — avoids expensive system font re-scan
+        let (cw, ch) =
+            Self::measure_cell_size(&mut self.font.font_system, self.scale_factor, new_zoom);
+        self.font.cell_width = cw;
+        self.font.cell_height = ch;
+        self.font.swash_cache = SwashCache::new();
         let size = self.window.inner_size();
         self.resize(size.width, size.height);
     }
